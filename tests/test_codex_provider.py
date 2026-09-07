@@ -98,6 +98,18 @@ for raw in sys.stdin:
         if prompt == "normal":
             send({"method": "item/started", "params": {
                 "threadId": thread_id, "turnId": turn_id, "startedAtMs": 1,
+                "item": {"type": "reasoning", "id": "reason-1",
+                         "summary": ["private reasoning summary"],
+                         "content": ["private reasoning content"]},
+            }})
+            send({"method": "item/completed", "params": {
+                "threadId": thread_id, "turnId": turn_id, "completedAtMs": 1,
+                "item": {"type": "reasoning", "id": "reason-1",
+                         "summary": ["private reasoning summary"],
+                         "content": ["private reasoning content"]},
+            }})
+            send({"method": "item/started", "params": {
+                "threadId": thread_id, "turnId": turn_id, "startedAtMs": 1,
                 "item": {"type": "commandExecution", "id": "cmd-1",
                          "command": "echo ok", "cwd": "/repo", "commandActions": [],
                          "status": "inProgress"},
@@ -246,12 +258,20 @@ class CodexProviderTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_run_streams_events_and_answers_exact_command_approval(self):
         context, events, approvals = self.context(
-            settings={"approval_policy": "onRequest", "reasoning_effort": "high"}
+            settings={
+                "approval_policy": "onRequest",
+                "sandbox": "workspaceWrite",
+                "reasoning_effort": "high",
+            }
         )
 
         await self.provider.run(context, "normal")
 
-        self.assertEqual(events[0], ("provider_session", {"session_id": "thread-new"}))
+        self.assertEqual(
+            events[0],
+            ("status", {"phase": "starting", "text": "Starting Codex"}),
+        )
+        self.assertIn(("provider_session", {"session_id": "thread-new"}), events)
         self.assertIn(("message_delta", {"item_id": "msg-1", "text": "Done"}), events)
         self.assertIn(
             ("message", {"role": "assistant", "text": "Done", "item_id": "msg-1"}),
@@ -263,6 +283,7 @@ class CodexProviderTests(unittest.IsolatedAsyncioTestCase):
             if kind == "tool" and data.get("item_id") == "cmd-1" and data.get("delta")
         )
         self.assertEqual(command_delta["text"], "ok\n")
+        self.assertEqual(command_delta["tool_type"], "commandExecution")
         self.assertEqual(approvals[0]["provider_request_id"], "approval-command")
         self.assertEqual(approvals[0]["command"], "echo ok")
         self.assertEqual(approvals[0]["details"]["reason"], "test exact data")
@@ -270,20 +291,66 @@ class CodexProviderTests(unittest.IsolatedAsyncioTestCase):
         received = self.received()
         thread_start = next(row for row in received if row.get("method") == "thread/start")
         self.assertEqual(thread_start["params"]["approvalPolicy"], "on-request")
+        self.assertEqual(thread_start["params"]["sandbox"], "workspace-write")
         turn_start = next(row for row in received if row.get("method") == "turn/start")
         self.assertEqual(turn_start["params"]["effort"], "high")
         approval = next(row for row in received if row.get("id") == "approval-command")
         self.assertEqual(approval, {"id": "approval-command", "result": {"decision": "accept"}})
 
     async def test_resume_uses_persisted_thread_id_not_session_tree_id(self):
-        context, events, _ = self.context(session_id="thread-saved")
+        context, events, _ = self.context(
+            session_id="thread-saved",
+            settings={"approval_policy": None, "sandbox": None},
+        )
 
         await self.provider.run(context, "normal")
 
         request = next(row for row in self.received() if row.get("method") == "thread/resume")
         self.assertEqual(request["params"]["threadId"], "thread-saved")
+        self.assertEqual(request["params"]["approvalPolicy"], "never")
+        self.assertEqual(request["params"]["sandbox"], "danger-full-access")
         self.assertNotIn("serviceName", request["params"])
-        self.assertEqual(events[0], ("provider_session", {"session_id": "thread-saved"}))
+        self.assertEqual(
+            events[0],
+            ("status", {"phase": "starting", "text": "Resuming Codex"}),
+        )
+        self.assertIn(("provider_session", {"session_id": "thread-saved"}), events)
+
+    async def test_start_defaults_to_yolo_app_server_settings(self):
+        context, _, _ = self.context()
+
+        await self.provider.run(context, "normal")
+
+        request = next(
+            row for row in self.received() if row.get("method") == "thread/start"
+        )
+        self.assertEqual(request["params"]["approvalPolicy"], "never")
+        self.assertEqual(request["params"]["sandbox"], "danger-full-access")
+
+    async def test_activity_phases_are_structured_without_reasoning_text(self):
+        context, events, _ = self.context()
+
+        await self.provider.run(context, "normal")
+
+        statuses = [data for kind, data in events if kind == "status"]
+        self.assertIn({"phase": "thinking", "text": "Thinking"}, statuses)
+        self.assertIn(
+            {"phase": "thinking", "text": "Thinking", "item_id": "reason-1"},
+            statuses,
+        )
+        self.assertIn(
+            {"phase": "working", "text": "Working", "item_id": "cmd-1"},
+            statuses,
+        )
+        self.assertIn(
+            {
+                "phase": "responding",
+                "text": "Writing response",
+                "item_id": "msg-1",
+            },
+            statuses,
+        )
+        self.assertNotIn("private reasoning", repr(events))
 
     async def test_file_and_permission_approvals_fail_closed_and_echo_grant(self):
         context, _, approvals = self.context(decisions=["reject", "allow"])

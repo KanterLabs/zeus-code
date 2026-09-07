@@ -1,7 +1,7 @@
 # v1 validation
 
 Validated on September 7, 2026, on Linux with Python 3.14.4. The implemented
-application version is 1.0.1. The compatibility target is Python 3.11+ on Linux
+application version is 1.0.2. The compatibility target is Python 3.11+ on Linux
 and macOS; CI contains Python 3.11 and 3.14 jobs on `homelab`. macOS and the CI
 runner executions are not claimed as locally verified.
 
@@ -32,7 +32,7 @@ The standard-library unittest suite covers:
   bounded lines, snapshot assembly, source-checkout detached startup, CLI
   argument handling and actionable non-TTY errors.
 
-**126 tests passed** in the 1.0.1 full-suite run. Source compilation, whitespace
+**153 tests passed** in the 1.0.2 full-suite run. Source compilation, whitespace
 checks, standalone packaging, and all three launcher smoke checks also passed.
 The full suite, build, and bundle smoke also passed from an isolated clean
 checkout with no pre-existing scratch directory.
@@ -55,6 +55,14 @@ Installed provider versions: **codex-cli 0.153.4** and **OpenCode 1.18.26**.
 Discovery detected an authenticated Codex account and connected OpenCode models.
 Credential values were not copied into Zeus configuration or logs.
 
+The 1.0.2 Codex fixtures verify YOLO defaults (`never` approvals and
+`danger-full-access` sandbox) for both new and resumed threads, retained explicit
+permission overrides, and generic activity phases without reasoning content.
+The installed app-server also accepted fresh threads with the default YOLO
+settings and with an explicit `on-request`/`workspace-write` override. These
+configuration checks started no model turns. Resume remains covered by protocol
+fixtures and the earlier live conversation checks below.
+
 Individual adapter smoke checks returned an exact verification token without
 tools or file changes. A later integrated check ran **Codex gpt-5.6-sol** and
 **OpenCode opencode/big-pickle** concurrently through two independent Zeus
@@ -73,6 +81,23 @@ Approval and cancellation isolation are validated with deterministic structured
 provider fixtures. These are distinct from the live no-tools model checks.
 
 ## Terminal and packaging evidence
+
+The 1.0.2 activity strip and sidebar are driven by accepted runs and provider
+events. Tests cover elapsed and quiet timers, concurrent tools, exact command
+titles during output streaming, terminal outcomes, pending approvals, stale
+machines, and activity while browsing older history. Run timestamps survive the
+500-event client cache limit and reopening. Delayed snapshots and old retry
+acknowledgements cannot replace a newer run or regress terminal state; retrying
+an unconfirmed request preserves a subsequently edited draft.
+
+A real tmux terminal, real Unix-socket daemon and deterministic provider fixture
+verified thinking, command execution, response streaming, completion, failure,
+approval, selected-run cancellation, and offline last-known state. Animation and
+elapsed time advanced during quiet periods and stopped on completion. The exact
+Unicode multiline draft survived 120×32, 80×24, 60×20, 48×16 and 90×16 sizes.
+The compact sidebar keeps the selected thread and activity visible at minimum
+height. Captures of the activity strip were inspected visually. These terminal
+checks did not invoke a paid provider.
 
 The 1.0.1 interface adds a complete first-use creation form, automatic project
 selection, immediate display of successful creation, inline errors and editable

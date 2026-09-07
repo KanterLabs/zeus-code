@@ -8,11 +8,13 @@ import json
 import os
 import sys
 import textwrap
+import time
 import unicodedata
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 
+from .activity import ACTIVE_STATES, RunActivity, duration, permission_label, summarize_activity
 from .transcript import render_transcript
 from .ui_forms import Form
 from .workspace import Workspace
@@ -199,6 +201,7 @@ class TUIApplication:
         self._form_selection: tuple[Any, ...] | None = None
         self._mouse_targets: list[tuple[int, int, int, int, Callable[[], None]]] = []
         self._cursor_position: tuple[int, int] | None = None
+        self._sending: set[tuple[str, str]] = set()
 
     async def run(self, screen: Any) -> None:
         curses.raw()
@@ -350,11 +353,13 @@ class TUIApplication:
                 details.append(str(project.get("name")))
             if thread:
                 details.extend([str(thread.get("provider")), str(thread.get("branch") or ""), str(thread.get("state", "idle"))])
+                details.append(permission_label(thread))
             self.put(screen, 2, 34, " / ".join(filter(None, details)), self.color(10), width - 40)
         elif project or thread:
             details = [str(machine.get("alias", "local")), str(project.get("name") or ""), str(thread.get("title") or "")]
             if thread:
                 details.extend([str(thread.get("provider") or ""), str(thread.get("branch") or ""), str(thread.get("state", "idle"))])
+                details.append(permission_label(thread))
             self.put(screen, 2, 2, " " * (width - 4), self.color(6), width - 4)
             self.put(screen, 2, 2, " / ".join(filter(None, details)), self.color(10), width - 4)
         connection = str(machine.get("connection", "disconnected"))
@@ -363,17 +368,22 @@ class TUIApplication:
 
     def _draw_sidebar(self, screen: Any, top: int, width: int, height: int) -> None:
         self._fill(screen, top, 1, width - 1, height, self.color(11))
-        self.put(screen, top + 1, 3, "WORKSPACE", self.color(8) | curses.A_BOLD)
-        self._button(screen, top + 3, 3, "+ New thread", self._new_thread_form, primary=True)
+        compact = height < 13
+        self.put(screen, top if compact else top + 1, 3, "WORKSPACE", self.color(8) | curses.A_BOLD)
+        self._button(screen, top + (2 if compact else 3), 3, "+ New thread", self._new_thread_form, primary=True)
         rows = build_tree_rows(self.workspace)
+        if self.focus != "sidebar":
+            self.tree_index = next((index for index, row in enumerate(rows)
+                                    if row.thread_id == self.workspace.state.get("selected_thread") and row.thread_id
+                                    and row.machine_id == self.workspace.selected_machine_id), self.tree_index)
         self.tree_index = max(0, min(self.tree_index, len(rows) - 1))
         # A thread gets its own second line, so titles never compete with status.
-        capacity = max(1, height - 9)
+        y = top + (4 if compact else 6)
+        end = top + height - (2 if compact else 3)
+        capacity = max(1, end - y)
         start = 0
         while start < self.tree_index and sum(2 if row.kind == "thread" else 1 for row in rows[start:self.tree_index + 1]) > capacity:
             start += 1
-        y = top + 6
-        end = top + height - 3
         for index, row in enumerate(rows[start:], start):
             size = 2 if row.kind == "thread" else 1
             if y + size > end:
@@ -391,10 +401,13 @@ class TUIApplication:
             else:
                 thread = next((item for item in self.workspace.threads(row.machine_id) if item.get("id") == row.thread_id), {})
                 self.put(screen, y, 5, row.text.strip(), attr | (curses.A_BOLD if active else 0), width - 7)
-                label = str(thread.get("provider", "")) + " · " + str(row.state or "idle").replace("awaiting_approval", "approval")
-                if row.stale:
-                    label += " · stale"
-                self.put(screen, y + 1, 5, label, self.color(14 if active else 8), width - 7)
+                activity = self._thread_activity(thread, row.machine_id)
+                phase = {"Running command": "command", "Running tool": "tool", "Editing files": "editing",
+                         "Searching the web": "search", "Working with agents": "agents", "Writing response": "replying",
+                         "Waiting for approval": "approval", "Starting Codex": "starting", "Starting Opencode": "starting",
+                         "Completed": "done", "Interrupted": "paused"}.get(activity.label, activity.label.lower())
+                label = activity.marker(time.monotonic()) + " " + str(thread.get("provider", "")) + " · " + ("offline" if activity.stale else phase)
+                self.put(screen, y + 1, 5, label, self.color(14 if active else (12 if row.state in ACTIVE_STATES else 8)), width - 7)
             self._mouse_targets.append((y, 2, size, width - 3, lambda i=index: self._open_tree_row(i)))
             y += size
         if not self.workspace.projects():
@@ -412,14 +425,15 @@ class TUIApplication:
             self._draw_welcome(screen, top, content_left, content_width, height)
             return
         composer_y = height - 8
+        activity_y = composer_y - 3
         events = self.workspace.view_events()
         if not events:
-            y = max(top + 1, min(top + 3, composer_y - 5))
-            self.put(screen, y, content_left + 1, "What would you like to build?", curses.A_BOLD, content_width - 2)
-            self.put(screen, y + 2, content_left + 1, "Ask a question, describe a change, or paste an error.", self.color(10), content_width - 2)
-            self.put(screen, y + 3, content_left + 1, "Your draft stays here when you switch conversations.", self.color(10), content_width - 2)
+            self.put(screen, top, content_left + 1, "What would you like to build?", curses.A_BOLD, content_width - 2)
+            if activity_y - top >= 5:
+                self.put(screen, top + 2, content_left + 1, "Ask a question, describe a change, or paste an error.", self.color(10), content_width - 2)
+                self.put(screen, top + 3, content_left + 1, "Your draft stays here when you switch conversations.", self.color(10), content_width - 2)
         else:
-            visible = visible_conversation_lines(events, content_width, max(1, composer_y - top - 1), self.workspace.thread_view(), expanded_tools=self.expanded_tools)
+            visible = visible_conversation_lines(events, content_width, max(1, activity_y - top), self.workspace.thread_view(), expanded_tools=self.expanded_tools)
             for offset, line in enumerate(visible):
                 attr = self.color(6)
                 if line.strip() in {"you", "assistant", "agent"} or line.startswith("you:"):
@@ -427,10 +441,12 @@ class TUIApplication:
                 elif line.startswith(("▸", "▾", "—")):
                     attr = self.color(10)
                 self.put(screen, top + offset, content_left, line, attr, content_width)
+        self._draw_activity(screen, activity_y, content_left, content_width, thread)
         self._fill(screen, composer_y, content_left, content_width, 5, self.color(7))
         border = self.color(12 if self.focus == "composer" else 15)
         self.put(screen, composer_y, content_left, "╭" + "─" * (content_width - 2) + "╮", border, content_width)
-        title = " Message " + str(thread.get("provider", "agent")) + " "
+        mode = permission_label(thread)
+        title = " Message " + str(thread.get("provider", "agent")) + (" · " + mode if mode else "") + " "
         self.put(screen, composer_y, content_left + 2, title, border)
         for row in range(1, 4):
             self.put(screen, composer_y + row, content_left, "│", border)
@@ -450,8 +466,36 @@ class TUIApplication:
         if self.focus == "composer":
             self._cursor_position = (composer_y + 1 + caret_line - first_line, content_left + 2 + caret_column)
         enter_action = "Enter send" if self.workspace.state["settings"].get("enter_sends", True) else "Ctrl+S send"
-        self.put(screen, height - 2, content_left, f"{enter_action}   Ctrl+J newline   Ctrl+D review", self.color(10), content_width)
+        controls = "Ctrl+X stop   F7 tool output   Ctrl+D review" if thread.get("state") in ACTIVE_STATES else f"{enter_action}   Ctrl+J newline   Ctrl+D review"
+        self.put(screen, height - 2, content_left, controls, self.color(10), content_width)
         self._mouse_targets.append((composer_y, content_left, 5, content_width, lambda: setattr(self, "focus", "composer")))
+
+    def _thread_activity(self, thread: dict[str, Any], machine_id: str | None = None) -> RunActivity:
+        machine_id = machine_id or self.workspace.selected_machine_id
+        machine = self.workspace.machines[machine_id]
+        return summarize_activity(
+            thread, self.workspace.thread_events(str(thread["id"]), machine_id),
+            self.workspace.thread_run(str(thread["id"]), machine_id), now=time.time(),
+            stale=bool(machine.get("stale")) or machine.get("connection") != "connected",
+        )
+
+    def _draw_activity(self, screen: Any, y: int, x: int, width: int, thread: dict[str, Any]) -> None:
+        activity = self._thread_activity(thread)
+        if (self.workspace.selected_machine_id, str(thread["id"])) in self._sending:
+            activity = RunActivity("running", "Sending prompt", "Waiting for the daemon to accept your message")
+        elif self.workspace.state["uncertain_sends"].get(f"{self.workspace.selected_machine_id}:{thread['id']}"):
+            activity = RunActivity("interrupted", "Send not confirmed", "Ctrl+Y checks the same request safely; your draft is saved")
+        color = 8 if activity.stale else (3 if activity.state in {"awaiting_approval", "interrupted"} else 4 if activity.state == "failed" else 12)
+        self._fill(screen, y, x, width, 2, self.color(7))
+        headline = activity.headline(time.monotonic())
+        quiet = f"Last update {duration(activity.quiet_for)} ago" if activity.quiet_for is not None and activity.state in ACTIVE_STATES else ""
+        self.put(screen, y, x + 1, headline, self.color(color) | curses.A_BOLD, width - 2)
+        detail = activity.detail
+        if quiet and width >= len(headline) + len(quiet) + 5:
+            self.put(screen, y, x + width - len(quiet) - 1, quiet, self.color(8), len(quiet))
+        elif quiet and activity.state in ACTIVE_STATES and not activity.stale:
+            detail = quiet + " · " + detail
+        self.put(screen, y + 1, x + 1, detail, self.color(8), width - 2)
 
     def _draw_welcome(self, screen: Any, top: int, left: int, width: int, height: int) -> None:
         x = left + max(0, (width - 60) // 2)
@@ -474,6 +518,12 @@ class TUIApplication:
         status = self.status if self.status not in {"Ready", "Opened cached state"} else ""
         if count:
             status = f"{count} approval{'s' if count != 1 else ''} waiting · F6"
+        elif not status or status in {"Prompt accepted", "Prompt retry accepted"}:
+            running = sum(thread.get("state") == "running" for machine_id, machine in self.workspace.machines.items()
+                          if machine.get("connection") == "connected" and not machine.get("stale")
+                          for thread in self.workspace.threads(machine_id))
+            if running:
+                status = f"{running} thread{'s' if running != 1 else ''} working · Ctrl+P"
         keys = "Ctrl+P switch   Ctrl+N new   F1 help   Ctrl+Q quit"
         if width < 80:
             keys = "^N new  ^P switch  F1 help  ^Q quit"
@@ -814,14 +864,7 @@ class TUIApplication:
             if thread_id:
                 self.spawn(self.workspace.cancel_thread(str(thread_id), machine_id=machine_id), success="Cancellation requested")
         elif key == 25:  # Ctrl+Y: explicit idempotent retry after uncertain send.
-            machine_id = self.workspace.selected_machine_id
-            thread_id = (self.workspace.selected_thread or {}).get("id")
-            prompt = self.composer
-            if thread_id:
-                self.spawn(
-                    self.workspace.retry_uncertain(thread_id, machine_id=machine_id), success="Prompt retry accepted",
-                    callback=lambda _: self._clear_composer_if(machine_id, thread_id, prompt),
-                )
+            self._send_prompt(retry=True)
         elif key in (curses.KEY_F2, 7):
             self._show_machines()
         elif key in (curses.KEY_F3, 15):
@@ -884,18 +927,7 @@ class TUIApplication:
 
     def _handle_composer_key(self, key: int) -> None:
         if key == 19 or (key in (13, curses.KEY_ENTER) and self.workspace.state["settings"].get("enter_sends", True)):
-            prompt = self.composer
-            machine_id = self.workspace.selected_machine_id
-            thread_id = (self.workspace.selected_thread or {}).get("id")
-            self.workspace.set_draft(prompt)
-            if thread_id:
-                self.spawn(
-                    self.workspace.send_prompt(prompt, machine_id=machine_id, thread_id=thread_id),
-                    success="Prompt accepted",
-                    callback=lambda _: self._clear_composer_if(machine_id, thread_id, prompt),
-                )
-            else:
-                self.status = "Select a thread before sending"
+            self._send_prompt()
         elif key in (10, 13, curses.KEY_ENTER, 15):
             self._insert("\n")
         elif key in (curses.KEY_BACKSPACE, 127, 8):
@@ -935,6 +967,40 @@ class TUIApplication:
         self.composer = self.composer[: self.cursor] + text + self.composer[self.cursor:]
         self.cursor += len(text)
         self.workspace.set_draft(self.composer)
+
+    def _send_prompt(self, *, retry: bool = False) -> None:
+        machine_id = self.workspace.selected_machine_id
+        thread_id = str((self.workspace.selected_thread or {}).get("id") or "")
+        if not thread_id:
+            self.status = "Select a thread before sending"
+            return
+        key = (machine_id, thread_id)
+        if key in self._sending:
+            self.status = "Sending prompt… waiting for the daemon"
+            return
+        prompt = self.composer
+        if not retry and not prompt.strip():
+            self.status = "Write a message before sending"
+            return
+        if retry:
+            record = self.workspace.state["uncertain_sends"].get(f"{machine_id}:{thread_id}") or {}
+            submitted = str(record.get("prompt") or "")
+        else:
+            submitted = prompt
+            self.workspace.set_draft(prompt)
+        self._sending.add(key)
+        self.status = "Sending prompt…"
+
+        async def send() -> Any:
+            try:
+                if retry:
+                    return await self.workspace.retry_uncertain(thread_id, machine_id=machine_id)
+                return await self.workspace.send_prompt(prompt, machine_id=machine_id, thread_id=thread_id)
+            finally:
+                self._sending.discard(key)
+
+        self.spawn(send(), success="Prompt retry accepted" if retry else "Prompt accepted",
+                   callback=lambda _: self._clear_composer_if(machine_id, thread_id, submitted))
 
     def _clear_composer(self) -> None:
         self.composer, self.cursor = "", 0
@@ -1053,7 +1119,7 @@ class TUIApplication:
             labels={"path": "Repository folder", "title": "Thread name", "provider": "Coding agent", "isolation": "Working files"},
             hints={"path": "Existing Git repository on this machine. Type to replace; Ctrl+U clears.",
                    "title": "A name you can find later. Change model settings with F4 after creation.",
-                   "provider": "← → choose Codex or OpenCode. Uses this machine's existing sign-in.",
+                   "provider": "← → choose. Codex defaults to YOLO: full access, no approval prompts.",
                    "isolation": "Shared checkout uses existing files. A new worktree isolates this thread."},
         )
 

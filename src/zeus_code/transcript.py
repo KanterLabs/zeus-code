@@ -7,6 +7,8 @@ from dataclasses import dataclass, field
 import unicodedata
 from typing import Any
 
+from .activity import ACTIVITY_PHASES
+
 
 MAX_RENDER_LINES = 10_000
 MAX_RENDER_EVENTS = 20_000
@@ -48,6 +50,10 @@ def render_transcript(
             continue
         raw_data = raw_event.get("data")
         data = raw_data if isinstance(raw_data, dict) else {}
+        # Machine phases belong in the live activity display. Keep ordinary
+        # provider status messages (warnings, plans, retries) in the transcript.
+        if kind == "status" and data.get("phase") in ACTIVITY_PHASES:
+            continue
         run_value = raw_event.get("run_id")
         run_id = None if run_value is None else str(run_value)
 
