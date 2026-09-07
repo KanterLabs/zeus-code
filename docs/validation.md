@@ -34,6 +34,8 @@ The standard-library unittest suite covers:
 
 **107 tests passed** in the final full-suite run. Source compilation, whitespace
 checks, standalone packaging, and all three launcher smoke checks also passed.
+The full suite, build, and bundle smoke also passed from an isolated clean
+checkout with no pre-existing scratch directory.
 
 ```sh
 mkdir -p .work/tmp

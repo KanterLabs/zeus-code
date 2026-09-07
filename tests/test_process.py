@@ -39,6 +39,7 @@ with open(marker, "a", buffering=1) as output:
 def descendant_provider(*, linger: bool, ignore_term: bool = False) -> str:
     return textwrap.dedent(
         f"""
+        import os
         import subprocess
         import sys
         import time
@@ -47,6 +48,22 @@ def descendant_provider(*, linger: bool, ignore_term: bool = False) -> str:
             [sys.executable, "-c", {WRITER!r}, sys.argv[1],
              {"ignore-term" if ignore_term else "handle-term"!r}]
         )
+        deadline = time.monotonic() + 3.0
+        while True:
+            try:
+                ready = os.path.getsize(sys.argv[1]) > 0
+            except FileNotFoundError:
+                ready = False
+            if ready:
+                break
+            if time.monotonic() >= deadline:
+                child.kill()
+                try:
+                    child.wait(timeout=1.0)
+                except subprocess.TimeoutExpired:
+                    pass
+                raise RuntimeError("descendant did not complete its first write")
+            time.sleep(0.01)
         print(child.pid, flush=True)
         {"time.sleep(60)" if linger else "raise SystemExit(7)"}
         """
@@ -203,7 +220,7 @@ time.sleep(60)
             start_new_session=True,
         )
         assert process.stdout is not None
-        descendant_pid = int(await asyncio.wait_for(process.stdout.readline(), 2.0))
+        descendant_pid = int(await asyncio.wait_for(process.stdout.readline(), 5.0))
         await asyncio.wait_for(process.wait(), 3.0)
 
         self.assertEqual(process.returncode, 7)
@@ -226,7 +243,7 @@ time.sleep(60)
             start_new_session=True,
         )
         assert process.stdout is not None
-        descendant_pid = int(await asyncio.wait_for(process.stdout.readline(), 2.0))
+        descendant_pid = int(await asyncio.wait_for(process.stdout.readline(), 5.0))
         await wait_until(lambda: marker.exists() and marker.stat().st_size > 0)
 
         process.terminate()
@@ -282,7 +299,7 @@ asyncio.run(main())
         )
         self.processes.append(parent)
         assert parent.stdout is not None
-        ready = json.loads(await asyncio.wait_for(parent.stdout.readline(), 3.0))
+        ready = json.loads(await asyncio.wait_for(parent.stdout.readline(), 5.0))
         await wait_until(lambda: marker.exists() and marker.stat().st_size > 0)
 
         killed_at = time.monotonic()
