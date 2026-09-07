@@ -23,10 +23,16 @@ From a checkout:
 ./zeus-code
 ```
 
-Press **F3** to register a repository, select its project in the sidebar with
-**Tab** and the arrow keys, then **Ctrl+N** to create a thread. Choose `codex` or
-`opencode`, give it a name, optionally select a model and dedicated worktree, and
-send your first prompt. Each conversation keeps its provider for its lifetime.
+Press **Enter** on the welcome screen, **Ctrl+N**, or click **New thread**.
+Choose a repository folder, name the conversation, and select `codex` or
+`opencode` with the arrow keys. Press **Ctrl+S** to create it. The repository is
+registered automatically and the new thread opens, ready for your first message.
+Use **F4** to change its model. Each conversation keeps its provider for its lifetime.
+
+Form defaults are selected: typing replaces them, and **Ctrl+U** clears a field.
+**Tab / Shift+Tab** move between fields; **Enter** advances or submits the last
+field. Errors stay inside the form so you can correct a path and retry.
+You can also register repositories separately with **Ctrl+O** or **F3**.
 
 For an installed command, build the standalone application:
 
@@ -77,7 +83,8 @@ A disconnected client does not imply that the remote agent has stopped.
 | Key | Action |
 | --- | --- |
 | Ctrl+P | Search threads across all cached machines and projects |
-| Ctrl+N | Create a named provider thread in the selected project |
+| Ctrl+N | Choose a repository and create a named provider thread |
+| Ctrl+O / Ctrl+G | Add repository / machines |
 | Tab | Switch sidebar/composer focus, or advance a form |
 | Enter | Send; activate selection or advance/submit a form |
 | Alt+Enter / Ctrl+J | Insert a newline |
@@ -97,6 +104,13 @@ context-specific actions, including archive, history paging, and explicit retry
 of an uncertain send. The sidebar collapses in narrow terminals; Ctrl+P remains
 available. Terminal emulators may reserve a key; Enter behavior is configurable
 and the multiline fallback is saved in the client cache.
+The interface supports terminals from 48×16; the sidebar appears from 90 columns.
+Mouse clicks work on buttons, workspace entries and form fields when supported
+by your terminal.
+
+To update a checkout, exit the client with **Ctrl+Q**, run `git pull --ff-only`,
+then run `./zeus-code` again. The 1.0.1 interface update is compatible with an
+already-running 1.0.0 daemon, so active tasks keep running during this update.
 
 ## Approvals, diffs, and isolation
 

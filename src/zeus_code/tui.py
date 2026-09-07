@@ -8,15 +8,17 @@ import json
 import os
 import sys
 import textwrap
-from dataclasses import dataclass, field
+import unicodedata
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 
 from .transcript import render_transcript
+from .ui_forms import Form
 from .workspace import Workspace
 
 
-RABBIT = "(/) Zeus Code"
+RABBIT = "ZEUS CODE"
 STATE_GLYPHS = {
     "idle": "· idle",
     "running": "▶ running",
@@ -101,6 +103,32 @@ def safe_terminal_text(value: Any) -> str:
     return "".join(output)
 
 
+def character_width(character: str) -> int:
+    if unicodedata.combining(character) or unicodedata.category(character) in {"Mn", "Me", "Cf"}:
+        return 0
+    return 2 if unicodedata.east_asian_width(character) in {"W", "F"} else 1
+
+
+def clip_cells(text: str, columns: int) -> str:
+    used = 0
+    for index, character in enumerate(text):
+        used += character_width(character)
+        if used > columns:
+            return text[:index]
+    return text
+
+
+def text_view(text: str, cursor: int, columns: int) -> tuple[str, int]:
+    """Keep the insertion caret visible using terminal cells, not code points."""
+    cursor = min(max(0, cursor), len(text))
+    column = sum(character_width(character) for character in text[:cursor])
+    start = 0
+    while column >= max(1, columns) and start < cursor:
+        column -= character_width(text[start])
+        start += 1
+    return clip_cells(text[start:], columns), column
+
+
 @dataclass(frozen=True)
 class TreeRow:
     kind: str
@@ -140,40 +168,6 @@ def build_tree_rows(workspace: Workspace) -> list[TreeRow]:
     return rows
 
 
-@dataclass
-class Form:
-    title: str
-    fields: list[tuple[str, str]]
-    submit: Callable[[dict[str, str]], None]
-    values: list[str] = field(default_factory=list)
-    index: int = 0
-
-    def __post_init__(self) -> None:
-        if not self.values:
-            self.values = [default for _, default in self.fields]
-
-    def key(self, key: int) -> bool:
-        if key in (curses.KEY_ENTER, 10, 13):
-            if self.index < len(self.fields) - 1:
-                self.index += 1
-            else:
-                self.submit({name: self.values[i] for i, (name, _) in enumerate(self.fields)})
-            return True
-        if key in (curses.KEY_BACKSPACE, 127, 8):
-            self.values[self.index] = self.values[self.index][:-1]
-            return True
-        if key == 9:
-            self.index = (self.index + 1) % len(self.fields)
-            return True
-        if 32 <= key <= 0x10FFFF:
-            try:
-                self.values[self.index] += chr(key)
-            except ValueError:
-                pass
-            return True
-        return False
-
-
 class TUIApplication:
     def __init__(self, workspace: Workspace) -> None:
         self.workspace = workspace
@@ -201,6 +195,10 @@ class TUIApplication:
         self.status = "Starting connections…"
         self.tasks: set[asyncio.Task[Any]] = set()
         self._last_escape = False
+        self._form_machine_id: str | None = None
+        self._form_selection: tuple[Any, ...] | None = None
+        self._mouse_targets: list[tuple[int, int, int, int, Callable[[], None]]] = []
+        self._cursor_position: tuple[int, int] | None = None
 
     async def run(self, screen: Any) -> None:
         curses.raw()
@@ -212,6 +210,12 @@ class TUIApplication:
         except curses.error:
             pass
         self._init_colors()
+        try:
+            curses.mousemask(curses.BUTTON1_CLICKED | curses.BUTTON1_PRESSED)
+            curses.mouseinterval(0)
+            curses.set_escdelay(25)
+        except (curses.error, AttributeError):
+            pass
         self.workspace.start_polling()
         try:
             while self.running:
@@ -223,7 +227,7 @@ class TUIApplication:
                 except curses.error:
                     key = None
                 if key is not None:
-                    self.handle_key(ord(key) if isinstance(key, str) else key)
+                    self.handle_key(key)
                 await asyncio.sleep(0)
         finally:
             for task in self.tasks:
@@ -250,15 +254,26 @@ class TUIApplication:
         if not curses.has_colors():
             return
         curses.start_color()
-        try:
-            curses.use_default_colors()
-        except curses.error:
-            pass
-        curses.init_pair(1, curses.COLOR_CYAN, -1)
-        curses.init_pair(2, curses.COLOR_BLACK, curses.COLOR_CYAN)
-        curses.init_pair(3, curses.COLOR_YELLOW, -1)
-        curses.init_pair(4, curses.COLOR_RED, -1)
-        curses.init_pair(5, curses.COLOR_GREEN, -1)
+        if curses.COLORS >= 256:
+            # Explicit backgrounds stay legible with translucent terminal themes.
+            base, panel, foreground, muted, accent = 234, 235, 252, 245, 115
+            border, selected = 239, 24
+            yellow, red, green = 221, 210, 150
+        else:
+            base = panel = curses.COLOR_BLACK
+            foreground, muted, accent = curses.COLOR_WHITE, curses.COLOR_WHITE, curses.COLOR_CYAN
+            border, selected = curses.COLOR_WHITE, curses.COLOR_BLUE
+            yellow, red, green = curses.COLOR_YELLOW, curses.COLOR_RED, curses.COLOR_GREEN
+        pairs = {
+            1: (accent, base), 2: (curses.COLOR_BLACK, accent),
+            3: (yellow, base), 4: (red, base), 5: (green, base),
+            6: (foreground, base), 7: (foreground, panel), 8: (muted, panel),
+            9: (border, base), 10: (muted, base), 11: (foreground, panel),
+            12: (accent, panel), 13: (foreground, selected),
+            14: (accent, selected), 15: (border, panel),
+        }
+        for pair, (foreground_color, background_color) in pairs.items():
+            curses.init_pair(pair, foreground_color, background_color)
 
     def color(self, pair: int) -> int:
         return curses.color_pair(pair) if curses.has_colors() else 0
@@ -268,125 +283,233 @@ class TUIApplication:
         height, columns = screen.getmaxyx()
         if y < 0 or y >= height or x < 0 or x >= columns:
             return
-        text = safe_terminal_text(text)
         maximum = max(0, columns - x - 1)
         if width is not None:
             maximum = min(maximum, max(0, width))
         try:
-            screen.addnstr(y, x, text, maximum, attr)
+            screen.addstr(y, x, clip_cells(safe_terminal_text(text), maximum), attr)
         except curses.error:
             pass
 
+    def _fill(self, screen: Any, y: int, x: int, width: int, height: int, attr: int) -> None:
+        for row in range(y, y + height):
+            self.put(screen, row, x, " " * max(0, width), attr, width)
+
+    def _button(self, screen: Any, y: int, x: int, label: str, action: Callable[[], None], *, primary: bool = False) -> None:
+        text = f"  {label}  "
+        self.put(screen, y, x, text, self.color(2 if primary else 7) | curses.A_BOLD)
+        self._mouse_targets.append((y, x, 1, len(text), action))
+
+    def _selection(self) -> tuple[Any, ...]:
+        return (self.workspace.selected_machine_id, self.workspace.state.get("selected_project"), self.workspace.state.get("selected_thread"))
+
     def draw(self, screen: Any) -> None:
+        screen.bkgd(" ", self.color(6))
         screen.erase()
+        self._mouse_targets = []
+        self._cursor_position = None
         height, width = screen.getmaxyx()
-        if height < 10 or width < 38:
-            self.put(screen, 0, 0, "Zeus Code needs a terminal at least 38×10.", self.color(3))
+        if height < 16 or width < 48:
+            self.put(screen, 1, 2, "ZEUS CODE", self.color(1) | curses.A_BOLD)
+            self.put(screen, 3, 2, "Resize to at least 48 columns × 16 rows.", self.color(10))
+            self.put(screen, 5, 2, "Ctrl+Q exits; your daemon keeps running.", self.color(10))
             screen.refresh()
             return
-        sidebar_width = min(34, max(24, width // 4)) if width >= 72 else 0
+        sidebar_width = min(32, max(25, width // 4)) if width >= 90 else 0
         self._draw_header(screen, width)
         if sidebar_width:
-            self._draw_sidebar(screen, 1, sidebar_width, height - 3)
-            for y in range(1, height - 2):
-                self.put(screen, y, sidebar_width, "│", curses.A_DIM)
-        self._draw_conversation(screen, 1, sidebar_width + (1 if sidebar_width else 0), width, height)
+            self._draw_sidebar(screen, 4, sidebar_width, height - 7)
+        self._draw_conversation(screen, 4, sidebar_width, width, height)
         self._draw_footer(screen, height - 1, width)
         if self.overlay:
+            for row in range(height):
+                try:
+                    screen.chgat(row, 0, width - 1, self.color(9))
+                except curses.error:
+                    pass
             self._draw_overlay(screen, height, width)
-        elif self.focus == "composer":
-            composer_y = height - 5
-            before = self.composer[: self.cursor]
-            row = min(2, before.count("\n"))
-            column = len(before.rsplit("\n", 1)[-1])
-            try:
-                screen.move(composer_y + 1 + row, (sidebar_width + 3 if sidebar_width else 2) + min(column, width - 5))
-            except curses.error:
-                pass
+        try:
+            curses.curs_set(1 if self._cursor_position else 0)
+            if self._cursor_position:
+                screen.move(*self._cursor_position)
+        except curses.error:
+            pass
         screen.refresh()
 
     def _draw_header(self, screen: Any, width: int) -> None:
         machine = self.workspace.selected_machine
         project = self.workspace.selected_project or {}
         thread = self.workspace.selected_thread or {}
-        parts = [str(machine.get("alias", "local")), str(project.get("name", "no project")), str(thread.get("title", "no thread"))]
-        if thread:
-            parts.extend([str(thread.get("provider", "")), str(thread.get("branch", ""))])
-        connection = machine.get("connection", "disconnected")
-        text = f" {RABBIT}  " + " / ".join(filter(None, parts)) + f"  [{connection}] "
-        self.put(screen, 0, 0, text.ljust(width - 1), self.color(2) | curses.A_BOLD)
+        self.put(screen, 1, 2, "(/)  " + RABBIT, self.color(1) | curses.A_BOLD)
+        self.put(screen, 2, 2, "A little space to build.", self.color(10))
+        if width >= 90:
+            context = str(thread.get("title") or project.get("name") or "Your workspace")
+            self.put(screen, 1, 34, context, curses.A_BOLD, width - 61)
+            details = [str(machine.get("alias", "local"))]
+            if project:
+                details.append(str(project.get("name")))
+            if thread:
+                details.extend([str(thread.get("provider")), str(thread.get("branch") or ""), str(thread.get("state", "idle"))])
+            self.put(screen, 2, 34, " / ".join(filter(None, details)), self.color(10), width - 40)
+        elif project or thread:
+            details = [str(machine.get("alias", "local")), str(project.get("name") or ""), str(thread.get("title") or "")]
+            if thread:
+                details.extend([str(thread.get("provider") or ""), str(thread.get("branch") or ""), str(thread.get("state", "idle"))])
+            self.put(screen, 2, 2, " " * (width - 4), self.color(6), width - 4)
+            self.put(screen, 2, 2, " / ".join(filter(None, details)), self.color(10), width - 4)
+        connection = str(machine.get("connection", "disconnected"))
+        self.put(screen, 1, max(24, width - len(connection) - 4), "● " + connection, self.color(5 if connection == "connected" else 3))
+        self.put(screen, 3, 1, "─" * (width - 3), self.color(9))
 
     def _draw_sidebar(self, screen: Any, top: int, width: int, height: int) -> None:
+        self._fill(screen, top, 1, width - 1, height, self.color(11))
+        self.put(screen, top + 1, 3, "WORKSPACE", self.color(8) | curses.A_BOLD)
+        self._button(screen, top + 3, 3, "+ New thread", self._new_thread_form, primary=True)
         rows = build_tree_rows(self.workspace)
-        if rows:
-            self.tree_index = max(0, min(self.tree_index, len(rows) - 1))
-        self.put(screen, top, 1, "WORKSPACE", self.color(1) | curses.A_BOLD, width - 2)
-        available = max(0, height - 2)
-        start = max(0, min(self.tree_index - available // 2, max(0, len(rows) - available)))
-        for index, row in enumerate(rows[start:start + available], start=start):
-            attr = curses.A_REVERSE if self.focus == "sidebar" and index == self.tree_index else 0
-            if row.kind == "thread":
-                attr |= {
-                    "running": self.color(1),
-                    "awaiting_approval": self.color(3),
-                    "completed": self.color(5),
-                    "failed": self.color(4),
-                }.get(row.state or "", 0)
-                label = execution_label(row.state, stale=row.stale)
-                suffix = f"  {label}"
-                if row.attention:
-                    suffix += f" !{row.attention}"
-                available_text = max(1, width - 2)
-                title_width = max(1, available_text - len(suffix))
-                text = row.text[:title_width] + suffix
-                self.put(screen, top + 1 + index - start, 1, text, attr, width - 2)
+        self.tree_index = max(0, min(self.tree_index, len(rows) - 1))
+        # A thread gets its own second line, so titles never compete with status.
+        capacity = max(1, height - 9)
+        start = 0
+        while start < self.tree_index and sum(2 if row.kind == "thread" else 1 for row in rows[start:self.tree_index + 1]) > capacity:
+            start += 1
+        y = top + 6
+        end = top + height - 3
+        for index, row in enumerate(rows[start:], start):
+            size = 2 if row.kind == "thread" else 1
+            if y + size > end:
+                break
+            selected = row.thread_id and row.thread_id == self.workspace.state.get("selected_thread") and row.machine_id == self.workspace.selected_machine_id
+            active = selected or (self.focus == "sidebar" and index == self.tree_index)
+            attr = self.color(13 if active else 11)
+            self._fill(screen, y, 2, width - 3, size, attr)
+            if row.kind == "machine":
+                machine = self.workspace.machines[row.machine_id]
+                mark = "●" if machine.get("connection") == "connected" else "○"
+                self.put(screen, y, 3, f"{mark} {machine.get('alias', 'local')}", self.color(14 if active else 12) | curses.A_BOLD, width - 5)
+            elif row.kind == "project":
+                self.put(screen, y, 4, "▾ " + row.text.strip(), attr | curses.A_BOLD, width - 6)
             else:
-                suffix = f" !{row.attention}" if row.attention else ""
-                self.put(screen, top + 1 + index - start, 1, row.text + suffix, attr, width - 2)
+                thread = next((item for item in self.workspace.threads(row.machine_id) if item.get("id") == row.thread_id), {})
+                self.put(screen, y, 5, row.text.strip(), attr | (curses.A_BOLD if active else 0), width - 7)
+                label = str(thread.get("provider", "")) + " · " + str(row.state or "idle").replace("awaiting_approval", "approval")
+                if row.stale:
+                    label += " · stale"
+                self.put(screen, y + 1, 5, label, self.color(14 if active else 8), width - 7)
+            self._mouse_targets.append((y, 2, size, width - 3, lambda i=index: self._open_tree_row(i)))
+            y += size
+        if not self.workspace.projects():
+            self.put(screen, min(y + 1, end), 4, "No repositories yet", self.color(8), width - 6)
+        self.put(screen, top + height - 2, 3, "+ Repository   Ctrl+O", self.color(12), width - 5)
+        self._mouse_targets.append((top + height - 2, 2, 1, width - 3, self._new_project_form))
+        self.put(screen, top + height - 1, 3, "Machines       Ctrl+G", self.color(8), width - 5)
+        self._mouse_targets.append((top + height - 1, 2, 1, width - 3, self._show_machines))
 
     def _draw_conversation(self, screen: Any, top: int, left: int, width: int, height: int) -> None:
-        content_width = max(10, width - left - 2)
-        bottom = height - 6
+        content_left = left + 3
+        content_width = max(10, width - content_left - 3)
+        thread = self.workspace.selected_thread
+        if thread is None:
+            self._draw_welcome(screen, top, content_left, content_width, height)
+            return
+        composer_y = height - 8
         events = self.workspace.view_events()
-        visible = visible_conversation_lines(
-            events, content_width, max(1, bottom - top), self.workspace.thread_view(),
-            expanded_tools=self.expanded_tools,
-        )
         if not events:
-            hint = "Select or create a thread. Ctrl+P searches cached threads instantly."
-            self.put(screen, top + 2, left + 1, hint, curses.A_DIM, content_width)
-        for offset, line in enumerate(visible):
-            self.put(screen, top + offset, left + 1, line, 0, content_width)
-        composer_y = height - 5
-        self.put(screen, composer_y, left + 1, "PROMPT", self.color(1) | curses.A_BOLD, content_width)
-        rendered = self.composer.splitlines()[-3:] or [""]
-        for offset in range(3):
-            line = rendered[offset] if offset < len(rendered) else ""
-            self.put(screen, composer_y + 1 + offset, left + 1, ("> " if offset == 0 else "  ") + line, curses.A_REVERSE if self.focus == "composer" else 0, content_width)
+            y = max(top + 1, min(top + 3, composer_y - 5))
+            self.put(screen, y, content_left + 1, "What would you like to build?", curses.A_BOLD, content_width - 2)
+            self.put(screen, y + 2, content_left + 1, "Ask a question, describe a change, or paste an error.", self.color(10), content_width - 2)
+            self.put(screen, y + 3, content_left + 1, "Your draft stays here when you switch conversations.", self.color(10), content_width - 2)
+        else:
+            visible = visible_conversation_lines(events, content_width, max(1, composer_y - top - 1), self.workspace.thread_view(), expanded_tools=self.expanded_tools)
+            for offset, line in enumerate(visible):
+                attr = self.color(6)
+                if line.strip() in {"you", "assistant", "agent"} or line.startswith("you:"):
+                    attr = self.color(1) | curses.A_BOLD
+                elif line.startswith(("▸", "▾", "—")):
+                    attr = self.color(10)
+                self.put(screen, top + offset, content_left, line, attr, content_width)
+        self._fill(screen, composer_y, content_left, content_width, 5, self.color(7))
+        border = self.color(12 if self.focus == "composer" else 15)
+        self.put(screen, composer_y, content_left, "╭" + "─" * (content_width - 2) + "╮", border, content_width)
+        title = " Message " + str(thread.get("provider", "agent")) + " "
+        self.put(screen, composer_y, content_left + 2, title, border)
+        for row in range(1, 4):
+            self.put(screen, composer_y + row, content_left, "│", border)
+            self.put(screen, composer_y + row, content_left + content_width - 1, "│", border)
+        self.put(screen, composer_y + 4, content_left, "╰" + "─" * (content_width - 2) + "╯", border, content_width)
+        text_width = max(1, content_width - 5)
+        logical = self.composer.split("\n")
+        caret_line = self.composer[:self.cursor].count("\n")
+        caret_column = len(self.composer[:self.cursor].rsplit("\n", 1)[-1])
+        first_line = max(0, caret_line - 2)
+        active_text, caret_column = text_view(logical[caret_line], caret_column, text_width)
+        for row, line in enumerate(logical[first_line:first_line + 3]):
+            rendered = active_text if row + first_line == caret_line else line
+            self.put(screen, composer_y + row + 1, content_left + 2, rendered, self.color(7), text_width)
+        if not self.composer:
+            self.put(screen, composer_y + 1, content_left + 2, "Describe your next step…", self.color(8), text_width)
+        if self.focus == "composer":
+            self._cursor_position = (composer_y + 1 + caret_line - first_line, content_left + 2 + caret_column)
+        enter_action = "Enter send" if self.workspace.state["settings"].get("enter_sends", True) else "Ctrl+S send"
+        self.put(screen, height - 2, content_left, f"{enter_action}   Ctrl+J newline   Ctrl+D review", self.color(10), content_width)
+        self._mouse_targets.append((composer_y, content_left, 5, content_width, lambda: setattr(self, "focus", "composer")))
+
+    def _draw_welcome(self, screen: Any, top: int, left: int, width: int, height: int) -> None:
+        x = left + max(0, (width - 60) // 2)
+        available = min(width, 64)
+        y = max(top + 1, (height - 11) // 2)
+        project = self.workspace.selected_project
+        title = f"Build something in {project.get('name')}" if project else "Your next idea starts here."
+        self.put(screen, y, x, title, curses.A_BOLD, available)
+        lead = "Create a conversation with Codex or OpenCode."
+        self.put(screen, y + 2, x, lead, self.color(10), available)
+        self.put(screen, y + 3, x, "Choose a repository as part of creating your first thread.", self.color(10), available)
+        self._button(screen, y + 5, x, "+ New thread   Enter", self._new_thread_form, primary=True)
+        self.put(screen, y + 7, x, "Ctrl+N  New thread    Ctrl+O  Add repository", self.color(10), available)
+        if y + 9 < height - 2:
+            self.put(screen, y + 9, x, "Your agents keep working when you leave this window.", self.color(10), available)
 
     def _draw_footer(self, screen: Any, y: int, width: int) -> None:
+        self._fill(screen, y, 0, width, 1, self.color(8))
         count = self.workspace.pending_approval_count()
-        keys = "Ctrl+P threads · Ctrl+N new · Ctrl+D diff · F1 help · Ctrl+Q quit"
+        status = self.status if self.status not in {"Ready", "Opened cached state"} else ""
         if count:
-            keys = f"! {count} approval{'s' if count != 1 else ''}  " + keys
-        if self.status:
-            keys = f"{self.status}  │  {keys}"
-        self.put(screen, y, 0, (" " + keys).ljust(width - 1), curses.A_REVERSE, width - 1)
+            status = f"{count} approval{'s' if count != 1 else ''} waiting · F6"
+        keys = "Ctrl+P switch   Ctrl+N new   F1 help   Ctrl+Q quit"
+        if width < 80:
+            keys = "^N new  ^P switch  F1 help  ^Q quit"
+        if status:
+            remaining = width - len(keys) - 7
+            if remaining >= 12:
+                self.put(screen, y, 2, status, self.color(8), remaining)
+                self.put(screen, y, width - len(keys) - 2, keys, self.color(8))
+            else:
+                self.put(screen, y, 2, status, self.color(8), width - 4)
+        else:
+            self.put(screen, y, 2, keys, self.color(8), width - 4)
 
     def _draw_overlay(self, screen: Any, height: int, width: int) -> None:
-        box_width = min(width - 6, 86)
-        box_height = min(height - 4, 22)
+        box_width = min(width - 4, 84)
+        desired = 10 + len(self.form.fields) * 3 if self.overlay == "form" and self.form else 25
+        box_height = min(height - 2, desired)
         x, y = (width - box_width) // 2, (height - box_height) // 2
+        self._cursor_position = None
+        self._mouse_targets = []
         try:
             window = screen.derwin(box_height, box_width, y, x)
+            window.bkgd(" ", self.color(6))
             window.erase()
+            window.attrset(self.color(9))
             window.box()
+            window.attrset(self.color(6))
         except curses.error:
             return
         if self.overlay == "search":
             self._overlay_search(window, box_height, box_width)
         elif self.overlay == "form" and self.form:
             self._overlay_form(window, box_height, box_width)
+            if self._cursor_position:
+                self._cursor_position = (self._cursor_position[0] + y, self._cursor_position[1] + x)
+            self._mouse_targets = [(row + y, col + x, h, w, action) for row, col, h, w, action in self._mouse_targets]
         elif self.overlay == "diff":
             self._overlay_diff(window, box_height, box_width)
         elif self.overlay == "machines":
@@ -398,11 +521,7 @@ class TUIApplication:
         window.noutrefresh()
 
     def _wput(self, window: Any, y: int, x: int, text: str, attr: int = 0, width: int | None = None) -> None:
-        maximum = window.getmaxyx()[1] - x - 1 if width is None else width
-        try:
-            window.addnstr(y, x, safe_terminal_text(text), max(0, maximum), attr)
-        except curses.error:
-            pass
+        self.put(window, y, x, text, attr, width)
 
     def _overlay_search(self, window: Any, height: int, width: int) -> None:
         self._wput(window, 0, 2, " Thread switcher — Esc close ", self.color(1) | curses.A_BOLD)
@@ -418,11 +537,45 @@ class TUIApplication:
 
     def _overlay_form(self, window: Any, height: int, width: int) -> None:
         assert self.form is not None
-        self._wput(window, 0, 2, f" {self.form.title} — Esc close ", self.color(1) | curses.A_BOLD)
-        for index, ((name, _), value) in enumerate(zip(self.form.fields, self.form.values)):
-            self._wput(window, 2 + index * 2, 2, name.replace("_", " ").title() + ":", curses.A_BOLD)
-            self._wput(window, 3 + index * 2, 2, value, curses.A_REVERSE if index == self.form.index else 0, width - 4)
-        self._wput(window, height - 2, 2, "Enter next/submit · Tab next", curses.A_DIM)
+        form = self.form
+        self._wput(window, 0, 2, f" {form.title} ", self.color(1) | curses.A_BOLD)
+        machine = self.workspace.machines.get(self._form_machine_id or self.workspace.selected_machine_id, {})
+        self._wput(window, 1, 3, f"On {machine.get('alias', 'local')}  ·  Tab next field  ·  Esc close", self.color(10), width - 6)
+        count = max(1, (height - 9) // 3)
+        first = max(0, form.index - count + 1)
+        for row, index in enumerate(range(first, min(len(form.fields), first + count))):
+            name = form.fields[index][0]
+            value = form.values[index]
+            active = index == form.index
+            y = 3 + row * 3
+            label = form.labels.get(name, name.replace("_", " ").title())
+            self._wput(window, y, 3, ("› " if active else "  ") + label, self.color(1 if active else 10), width - 6)
+            self._fill(window, y + 1, 3, width - 6, 1, self.color(7))
+            choices = form.choices.get(name)
+            if choices:
+                self._wput(window, y + 1, 5, "‹  " + value + "  ›", self.color(12 if active else 8), width - 10)
+            else:
+                rendered, cursor = text_view(value, form.cursor if active else 0, width - 10)
+                rendered = rendered if value else "(optional)"
+                attr = self.color(13 if active and form.replace_on_type and value else 7 if value else 8)
+                self._wput(window, y + 1, 5, rendered, attr, width - 10)
+                if active and not form.busy:
+                    self._cursor_position = (y + 1, 5 + cursor)
+            self._mouse_targets.append((y, 3, 2, width - 6, lambda i=index: self._focus_form_field(form, i)))
+        field = form.fields[form.index][0]
+        hint = form.hints.get(field, "← → choose" if form.choices.get(field) else "Type to replace the default · Ctrl+U clear")
+        self._wput(window, height - 6, 3, hint, self.color(10), width - 6)
+        if form.error:
+            for row, line in enumerate(wrap_text(form.error, width - 6)[:2]):
+                self._wput(window, height - 5 + row, 3, line, self.color(4), width - 6)
+        label = "Working…" if form.busy else ("Create thread  Ctrl+S" if form.title == "New thread" else "Save  Ctrl+S")
+        self._button(window, height - 3, 3, label, lambda: form.key(19), primary=not form.busy)
+        self._wput(window, height - 2, 3, "Enter next / finish    Shift+Tab back    ↑↓ navigate", self.color(10), width - 6)
+
+    @staticmethod
+    def _focus_form_field(form: Form, index: int) -> None:
+        if not form.busy:
+            form.index = index
 
     def _overlay_diff(self, window: Any, height: int, width: int) -> None:
         mode = "files" if self.diff_focus == "files" else "patch"
@@ -542,12 +695,13 @@ class TUIApplication:
             "Enter / Ctrl+S      send prompt",
             "Ctrl+J / Alt+Enter  insert newline",
             "Ctrl+P              search all cached threads",
-            "Ctrl+N              create provider thread",
+            "Ctrl+N              create thread (Enter on welcome screen)",
+            "Forms               Tab move · arrows choose · Ctrl+S save",
             "Ctrl+D              open changed-files diff",
             "Page Up / Down      browse history without following output",
             "Ctrl+X              cancel selected thread run",
             "Ctrl+Y              retry an uncertain send with the same request ID",
-            "F2 / F3             machines / add project",
+            "Ctrl+G / Ctrl+O    machines / add repository (also F2 / F3)",
             "F4                  model and reasoning setting",
             "F6 / F7             pending approval / expand tool details",
             "Diff Tab/↑↓/Enter   switch panes / select / load scoped patch",
@@ -559,7 +713,8 @@ class TUIApplication:
         for index, binding in enumerate(bindings[: height - 3]):
             self._wput(window, 2 + index, 2, binding, 0, width - 4)
 
-    def spawn(self, awaitable: Awaitable[Any], *, success: str = "Done", callback: Callable[[Any], None] | None = None) -> None:
+    def spawn(self, awaitable: Awaitable[Any], *, success: str = "Done", callback: Callable[[Any], None] | None = None,
+              on_error: Callable[[Exception], None] | None = None) -> None:
         task = asyncio.create_task(awaitable)
         self.tasks.add(task)
 
@@ -574,16 +729,53 @@ class TUIApplication:
                 self.status = success
             except Exception as exc:
                 self.status = str(exc)
+                if on_error:
+                    on_error(exc)
 
         task.add_done_callback(finished)
 
-    def handle_key(self, key: int) -> None:
+    def handle_key(self, key: int | str) -> None:
+        raw_key = key
+        if isinstance(key, str) and key.isprintable():
+            # get_wch distinguishes Unicode text from curses key constants;
+            # preserve that distinction (some code points share integer IDs).
+            self._last_escape = False
+            if self.overlay == "form" and self.form:
+                self.form.key(key)
+                return
+            if self.overlay == "search":
+                self.search_query += key
+                self.search_index = 0
+                return
+            if self.overlay is None and self.focus == "composer" and self.workspace.selected_thread is not None:
+                self._insert(key)
+                return
+        key = ord(key) if isinstance(key, str) else key
+        if key == curses.KEY_RESIZE and isinstance(raw_key, int):
+            return
+        if key == 17:  # Ctrl+Q works from every view.
+            self.running = False
+            return
+        if key == curses.KEY_MOUSE:
+            try:
+                _, x, y, _, buttons = curses.getmouse()
+            except curses.error:
+                return
+            if buttons & (curses.BUTTON1_CLICKED | curses.BUTTON1_PRESSED):
+                for row, col, height, width, action in reversed(self._mouse_targets):
+                    if row <= y < row + height and col <= x < col + width:
+                        action()
+                        break
+            return
         if self._last_escape:
             self._last_escape = False
             if key in (10, 13, curses.KEY_ENTER):
                 self._insert("\n")
                 return
         if key == 27:
+            if self.overlay == "form" and self.form and self.form.busy:
+                self.status = "Working… please wait for the result"
+                return
             if self.overlay:
                 self.overlay, self.form = None, None
                 self.approval_choice = None
@@ -591,11 +783,12 @@ class TUIApplication:
                 self._last_escape = True
             return
         if self.overlay:
-            self._handle_overlay_key(key)
+            if self.overlay == "form" and self.form:
+                self.form.key(raw_key)
+            else:
+                self._handle_overlay_key(key)
             return
-        if key == 17:  # Ctrl+Q
-            self.running = False
-        elif key == curses.KEY_F1:
+        if key == curses.KEY_F1:
             self.overlay = "help"
         elif key == 16:  # Ctrl+P
             self.overlay, self.search_query, self.search_index = "search", "", 0
@@ -629,9 +822,9 @@ class TUIApplication:
                     self.workspace.retry_uncertain(thread_id, machine_id=machine_id), success="Prompt retry accepted",
                     callback=lambda _: self._clear_composer_if(machine_id, thread_id, prompt),
                 )
-        elif key == curses.KEY_F2:
-            self.overlay = "machines"
-        elif key == curses.KEY_F3:
+        elif key in (curses.KEY_F2, 7):
+            self._show_machines()
+        elif key in (curses.KEY_F3, 15):
             self._new_project_form()
         elif key == curses.KEY_F4:
             self._model_form()
@@ -651,8 +844,27 @@ class TUIApplication:
             self.focus = "sidebar" if self.focus == "composer" else "composer"
         elif self.focus == "sidebar":
             self._handle_tree_key(key)
+        elif self.workspace.selected_thread is None:
+            if key in (10, 13, curses.KEY_ENTER, ord("n")):
+                self._new_thread_form()
+            elif key == ord("?"):
+                self.overlay = "help"
         else:
             self._handle_composer_key(key)
+
+    def _show_machines(self) -> None:
+        self.overlay = "machines"
+
+    def _open_tree_row(self, index: int) -> None:
+        rows = build_tree_rows(self.workspace)
+        if not 0 <= index < len(rows):
+            return
+        self.tree_index = index
+        row = rows[index]
+        self.workspace.switch(row.machine_id, row.project_id, row.thread_id)
+        self._load_selected_composer()
+        self.focus = "composer" if row.kind == "thread" else "sidebar"
+        self.status = "Ready"
 
     def _handle_tree_key(self, key: int) -> None:
         rows = build_tree_rows(self.workspace)
@@ -661,12 +873,7 @@ class TUIApplication:
         elif key == curses.KEY_DOWN:
             self.tree_index = min(max(0, len(rows) - 1), self.tree_index + 1)
         elif key in (10, 13, curses.KEY_ENTER) and rows:
-            row = rows[self.tree_index]
-            self.workspace.switch(row.machine_id, row.project_id, row.thread_id)
-            self.composer = self.workspace.thread_view().get("draft", "")
-            self.cursor = len(self.composer)
-            self.focus = "composer" if row.kind == "thread" else "sidebar"
-            self.status = "Opened cached state"
+            self._open_tree_row(self.tree_index)
         elif key == 18 and self.workspace.selected_thread:  # Ctrl+R
             thread = self.workspace.selected_thread
             self._show_form("Rename thread", [("title", str(thread.get("title", "")))], self._submit_rename)
@@ -718,7 +925,7 @@ class TUIApplication:
         elif key == curses.KEY_NPAGE:
             view = self.workspace.thread_view()
             self.workspace.set_scroll(max(0, int(view.get("scroll", 0)) - 10))
-        elif 32 <= key <= 0x10FFFF:
+        elif 32 <= key <= 0x10FFFF and not curses.KEY_MIN <= key <= curses.KEY_MAX:
             try:
                 self._insert(chr(key))
             except ValueError:
@@ -758,7 +965,7 @@ class TUIApplication:
             elif key in (curses.KEY_BACKSPACE, 127, 8):
                 self.search_query = self.search_query[:-1]
                 self.search_index = 0
-            elif 32 <= key <= 0x10FFFF:
+            elif 32 <= key <= 0x10FFFF and not curses.KEY_MIN <= key <= curses.KEY_MAX:
                 self.search_query += chr(key)
                 self.search_index = 0
         elif self.overlay == "diff":
@@ -822,21 +1029,61 @@ class TUIApplication:
         self.diff = result
         self.diff_scroll = 0
 
-    def _show_form(self, title: str, fields: list[tuple[str, str]], submit: Callable[[dict[str, str]], None]) -> None:
-        self.form, self.overlay = Form(title, fields, submit), "form"
+    def _show_form(self, title: str, fields: list[tuple[str, str]], submit: Callable[[dict[str, str]], None], **options: Any) -> None:
+        self._form_machine_id = self.workspace.selected_machine_id
+        self._form_selection = self._selection()
+        self.form, self.overlay = Form(title, fields, submit, **options), "form"
+
+    def _default_project_path(self) -> str:
+        project = self.workspace.selected_project
+        if project:
+            return str(project.get("path", ""))
+        return os.getcwd() if self.workspace.selected_machine.get("host") is None else ""
 
     def _new_thread_form(self) -> None:
-        if not self.workspace.selected_project:
-            self.status = "Select a project before creating a thread"
-            return
+        providers = self.workspace.selected_machine.get("providers", {})
+        preferred = str((self.workspace.selected_thread or {}).get("provider") or "codex")
+        if not providers.get(preferred, {}).get("available") and providers.get("opencode", {}).get("available"):
+            preferred = "opencode"
         self._show_form(
-            "New thread", [("title", "New conversation"), ("provider", "codex"), ("model", ""), ("worktree_y_n", "n")],
+            "New thread", [("path", self._default_project_path()), ("title", "New conversation"),
+                           ("provider", preferred), ("isolation", "Shared checkout")],
             self._submit_thread,
+            choices={"provider": ["codex", "opencode"], "isolation": ["Shared checkout", "New worktree"]},
+            labels={"path": "Repository folder", "title": "Thread name", "provider": "Coding agent", "isolation": "Working files"},
+            hints={"path": "Existing Git repository on this machine. Type to replace; Ctrl+U clears.",
+                   "title": "A name you can find later. Change model settings with F4 after creation.",
+                   "provider": "← → choose Codex or OpenCode. Uses this machine's existing sign-in.",
+                   "isolation": "Shared checkout uses existing files. A new worktree isolates this thread."},
         )
 
     def _new_project_form(self) -> None:
-        default_path = os.getcwd() if self.workspace.selected_machine.get("host") is None else "~"
-        self._show_form("Add project", [("path", default_path), ("name", "")], self._submit_project)
+        self._show_form("Add repository", [("path", self._default_project_path()), ("name", "")], self._submit_project,
+                        labels={"path": "Repository folder", "name": "Display name (optional)"},
+                        hints={"path": "Existing Git repository. Type to replace; Ctrl+U clears.",
+                               "name": "Leave blank to use the folder name."})
+
+    def _run_form_request(self, awaitable: Awaitable[Any], *, success: str,
+                          callback: Callable[[Any], None] | None = None) -> None:
+        form = self.form
+        if form is None or form.busy:
+            if hasattr(awaitable, "close"):
+                awaitable.close()
+            return
+        form.busy, form.error = True, ""
+
+        def completed(result: Any) -> None:
+            form.busy = False
+            if self.form is form:
+                self.form, self.overlay = None, None
+                if callback:
+                    callback(result)
+
+        def failed(exc: Exception) -> None:
+            form.busy = False
+            form.error = str(exc)
+
+        self.spawn(awaitable, success=success, callback=completed, on_error=failed)
 
     def _model_form(self) -> None:
         thread = self.workspace.selected_thread
@@ -847,7 +1094,7 @@ class TUIApplication:
         provider = self.workspace.selected_machine.get("providers", {}).get(provider_name, {})
         models = provider.get("models") or []
         options = ", ".join(
-            str(model.get("name") or model.get("id")) if isinstance(model, dict) else str(model)
+            str(model.get("id") or model.get("name")) if isinstance(model, dict) else str(model)
             for model in models[:5]
         )
         settings = thread.get("settings") if isinstance(thread.get("settings"), dict) else {}
@@ -867,40 +1114,60 @@ class TUIApplication:
             self.status = f"Added {machine['alias']}"
         except Exception as exc:
             self.status = str(exc)
+            if self.form:
+                self.form.error = str(exc)
 
     def _submit_project(self, values: dict[str, str]) -> None:
-        machine_id = self.workspace.selected_machine_id
-        self.overlay, self.form = None, None
-        self.spawn(
+        machine_id = self._form_machine_id or self.workspace.selected_machine_id
+        if not values["path"].strip():
+            if self.form:
+                self.form.error = "Enter the folder of an existing Git repository."
+            return
+        self._run_form_request(
             self.workspace.add_project(values["path"], values["name"] or None, machine_id=machine_id),
-            success="Project added",
+            success="Repository added · Ctrl+N creates a thread", callback=lambda _: self._load_selected_composer(),
         )
 
     def _submit_thread(self, values: dict[str, str]) -> None:
-        project = self.workspace.selected_project
-        if not project:
+        if self.form is None or self.form.busy:
             return
-        machine_id = self.workspace.selected_machine_id
+        machine_id = self._form_machine_id or self.workspace.selected_machine_id
+        selection = self._form_selection
+        path = values.get("path", "").strip()
+        if not path:
+            self.form.error = "Enter the folder of an existing Git repository."
+            self.form.index = 0
+            return
         provider = values["provider"].strip().lower()
         if provider not in {"codex", "opencode"}:
-            self.status = "Provider must be codex or opencode"
+            self.form.error = "Choose Codex or OpenCode using the arrow keys."
             return
-        self.overlay, self.form = None, None
-        self.spawn(
-            self.workspace.create_thread(
-                str(project["id"]), values["title"], provider, model=values["model"] or None,
-                worktree=values["worktree_y_n"].strip().lower().startswith("y"), machine_id=machine_id,
-            ),
-            success="Thread created",
-            callback=lambda _: self._load_selected_composer(),
-        )
+        title = values["title"].strip() or "New conversation"
+        isolated = values.get("isolation") == "New worktree"
+
+        async def create() -> dict[str, Any]:
+            canonical = str(Path(path).expanduser().resolve()) if self.workspace.machines[machine_id].get("host") is None else path
+            project = next((p for p in self.workspace.projects(machine_id) if p.get("path") == canonical), None)
+            if project is None:
+                project = await self.workspace.add_project(path, machine_id=machine_id)
+            if self._selection() == selection:
+                self.workspace.switch(machine_id, str(project["id"]))
+            return await self.workspace.create_thread(str(project["id"]), title, provider, worktree=isolated, machine_id=machine_id)
+
+        def opened(result: dict[str, Any]) -> None:
+            if self.workspace.selected_machine_id == machine_id and (self.workspace.selected_thread or {}).get("id") == result.get("id"):
+                self._load_selected_composer()
+                self.focus = "composer"
+                rows = build_tree_rows(self.workspace)
+                self.tree_index = next((i for i, row in enumerate(rows) if row.thread_id == result.get("id") and row.machine_id == machine_id), self.tree_index)
+
+        self._run_form_request(create(), success="Thread created · write your first message", callback=opened)
 
     def _submit_rename(self, values: dict[str, str]) -> None:
         machine_id = self.workspace.selected_machine_id
         thread = self.workspace.selected_thread
-        self.overlay, self.form = None, None
         if thread:
-            self.spawn(
+            self._run_form_request(
                 self.workspace.update_thread(str(thread["id"]), machine_id=machine_id, title=values["title"]),
                 success="Thread renamed",
             )
@@ -908,7 +1175,6 @@ class TUIApplication:
     def _submit_model(self, values: dict[str, str]) -> None:
         machine_id = self.workspace.selected_machine_id
         thread = self.workspace.selected_thread
-        self.overlay, self.form = None, None
         if thread:
             provider = str(thread.get("provider", "codex"))
             setting_name = "reasoning_effort" if provider == "codex" else "variant"
@@ -917,7 +1183,7 @@ class TUIApplication:
                 settings[setting_name] = values[setting_name]
             else:
                 settings.pop(setting_name, None)
-            self.spawn(
+            self._run_form_request(
                 self.workspace.update_thread(
                     str(thread["id"]), machine_id=machine_id,
                     model=values["model"] or None, settings=settings,

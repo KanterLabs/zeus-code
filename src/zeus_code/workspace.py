@@ -326,6 +326,22 @@ class Workspace:
         self.cache.mark_dirty()
         self.cache.save_if_due(self.state, force=force)
 
+    def _selection_context(self) -> tuple[str, Any, Any]:
+        return (
+            self.selected_machine_id,
+            self.state.get("selected_project"),
+            self.state.get("selected_thread"),
+        )
+
+    @staticmethod
+    def _upsert_snapshot_record(records: list[dict[str, Any]], record: dict[str, Any]) -> None:
+        record_id = record["id"]
+        for index, existing in enumerate(records):
+            if existing.get("id") == record_id:
+                records[index] = deepcopy(record)
+                return
+        records.append(deepcopy(record))
+
     async def _make_client(self, machine_id: str) -> Any:
         machine = self.machines[machine_id]
         kwargs = {"data_dir": self.data_dir if machine.get("host") is None else None, "host": machine.get("host")}
@@ -358,6 +374,13 @@ class Workspace:
         """Refresh snapshot and drain all event pages without skipping sequences."""
         machine = self.machines[machine_id]
         previous = deepcopy(machine)
+        baseline_ids = {
+            field: {
+                record.get("id")
+                for record in machine.get("snapshot", {}).get(field, [])
+            }
+            for field in ("projects", "threads")
+        }
         if machine_id not in self.clients:
             cached = machine.get("snapshot", {})
             has_cache = bool(machine.get("server_id") or cached.get("projects") or cached.get("threads"))
@@ -384,6 +407,18 @@ class Workspace:
             # the last item in that page, and a page can be short due to its byte
             # budget. Keep displaying the old coherent snapshot until catch-up.
             await self._drain_events(machine_id, client)
+            # A successful mutation can finish after this snapshot was taken.
+            # Preserve records added to the cache while catch-up was in flight;
+            # the next poll will reconcile them with an authoritative snapshot.
+            current_snapshot = machine.get("snapshot", {})
+            for field, known_ids in baseline_ids.items():
+                target = snapshot.setdefault(field, [])
+                target_ids = {record.get("id") for record in target}
+                for record in current_snapshot.get(field, []):
+                    record_id = record.get("id")
+                    if record_id not in known_ids and record_id not in target_ids:
+                        target.append(deepcopy(record))
+                        target_ids.add(record_id)
             machine["snapshot"] = snapshot
             machine["providers"] = providers
             # Events committed after the snapshot may already have arrived.
@@ -497,8 +532,15 @@ class Workspace:
 
     async def add_project(self, path: str, name: str | None = None, *, machine_id: str | None = None) -> dict[str, Any]:
         machine_id = machine_id or self.selected_machine_id
+        selection = self._selection_context()
         result = await self.rpc("add_project", {"path": path, "name": name}, machine_id=machine_id)
-        await self.sync_machine(machine_id)
+        projects = self.machines[machine_id].setdefault("snapshot", {}).setdefault("projects", [])
+        self._upsert_snapshot_record(projects, result)
+        if self._selection_context() == selection and selection[0] == machine_id:
+            self.switch(machine_id, result["id"])
+        else:
+            self._changed(force=True)
+        self._wake.set()
         return result
 
     async def create_thread(
@@ -506,6 +548,7 @@ class Workspace:
         settings: dict[str, Any] | None = None, worktree: bool = False, machine_id: str | None = None,
     ) -> dict[str, Any]:
         machine_id = machine_id or self.selected_machine_id
+        selection = self._selection_context()
         params: dict[str, Any] = {
             "project_id": project_id, "title": title, "provider": provider, "worktree": worktree,
         }
@@ -514,9 +557,17 @@ class Workspace:
         if settings:
             params["settings"] = settings
         result = await self.rpc("create_thread", params, machine_id=machine_id)
-        await self.sync_machine(machine_id)
-        if self.selected_machine_id == machine_id and self.state.get("selected_project") == project_id:
+        threads = self.machines[machine_id].setdefault("snapshot", {}).setdefault("threads", [])
+        self._upsert_snapshot_record(threads, result)
+        if (
+            self._selection_context() == selection
+            and selection[0] == machine_id
+            and selection[1] == project_id
+        ):
             self.switch(machine_id, project_id, result["id"])
+        else:
+            self._changed(force=True)
+        self._wake.set()
         return result
 
     async def update_thread(self, thread_id: str, *, machine_id: str | None = None, **changes: Any) -> dict[str, Any]:
