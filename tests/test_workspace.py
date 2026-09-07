@@ -31,6 +31,7 @@ class FakeRPC:
         self.events = list(events or [])
         self.calls = []
         self.send_failures = []
+        self.send_results = []
         self.sent_request_ids = []
         self.sent_prompts = []
         self.send_started = None
@@ -38,6 +39,8 @@ class FakeRPC:
         self.server_id = "server-a"
         self.snapshot_started = None
         self.snapshot_gate = None
+        self.providers_started = None
+        self.providers_gate = None
         self.add_project_started = None
         self.add_project_gate = None
         self.create_thread_started = None
@@ -68,6 +71,10 @@ class FakeRPC:
                 "last_seq": len(self.events),
             }
         if method == "providers":
+            if self.providers_started is not None:
+                self.providers_started.set()
+            if self.providers_gate is not None:
+                await self.providers_gate.wait()
             return {"codex": {"available": True, "detail": "ready"}}
         if method == "events":
             after = params["after"]
@@ -82,6 +89,8 @@ class FakeRPC:
                 await self.send_gate.wait()
             if self.send_failures:
                 raise self.send_failures.pop(0)
+            if self.send_results:
+                return self.send_results.pop(0)
             return {"id": "run1", "thread_id": params["thread_id"], "state": "running"}
         if method == "add_project":
             if self.add_project_started is not None:
@@ -243,6 +252,246 @@ class WorkspaceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(workspace.selected_machine_id, remote["id"])
         await workspace.close()
 
+    async def test_send_ack_is_visible_while_an_older_snapshot_is_still_syncing(self):
+        rpc = FakeRPC()
+        rpc.send_results.append({
+            "id": "run-now",
+            "thread_id": "t1",
+            "state": "running",
+            "created_at": "2026-09-07T00:02:00Z",
+            "updated_at": "2026-09-07T00:02:00Z",
+        })
+        workspace = self.make_workspace(rpc)
+        await workspace.sync_machine("local")
+        workspace.switch("local", "p1", "t1")
+
+        rpc.providers_started = asyncio.Event()
+        rpc.providers_gate = asyncio.Event()
+        syncing = asyncio.create_task(workspace.sync_machine("local"))
+        await rpc.providers_started.wait()
+        await workspace.send_prompt("start now")
+
+        self.assertEqual(workspace.thread_run(), {
+            "id": "run-now",
+            "state": "running",
+            "created_at": "2026-09-07T00:02:00Z",
+            "updated_at": "2026-09-07T00:02:00Z",
+            "last_event_at": None,
+            "ended_at": None,
+        })
+        self.assertEqual(workspace.selected_thread["state"], "running")
+
+        rpc.providers_gate.set()
+        await syncing
+        self.assertEqual(workspace.thread_run()["id"], "run-now")
+        self.assertEqual(workspace.selected_thread["state"], "running")
+        self.assertEqual(
+            [event for event in workspace.thread_events() if event.get("kind") == "message"],
+            [],
+        )
+        await workspace.close()
+
+    async def test_run_timestamps_survive_event_trimming_and_cache_reload(self):
+        workspace = self.make_workspace(FakeRPC())
+        await workspace.sync_machine("local")
+        machine = workspace.selected_machine
+        workspace._apply_event(machine, {
+            "seq": 1,
+            "thread_id": "t1",
+            "run_id": "run-long",
+            "kind": "run_state",
+            "data": {"state": "running"},
+            "created_at": "2026-09-07T01:00:00Z",
+        })
+        for seq in range(2, MAX_EVENTS_PER_THREAD + 52):
+            event_time = f"2026-09-{7 + (seq // 1440):02d}T{(seq // 60) % 24:02d}:{seq % 60:02d}:00Z"
+            workspace._apply_event(machine, {
+                "seq": seq,
+                "thread_id": "t1",
+                "run_id": "run-long",
+                "kind": "message_delta",
+                "data": {"text": str(seq)},
+                "created_at": event_time,
+            })
+        last_seq = MAX_EVENTS_PER_THREAD + 51
+        expected_last = f"2026-09-{7 + (last_seq // 1440):02d}T{(last_seq // 60) % 24:02d}:{last_seq % 60:02d}:00Z"
+        self.assertGreater(workspace.thread_events("t1")[0]["seq"], 1)
+        self.assertEqual(workspace.thread_run("t1")["created_at"], "2026-09-07T01:00:00Z")
+        self.assertEqual(workspace.thread_run("t1")["last_event_at"], expected_last)
+        await workspace.close()
+
+        restored = self.make_workspace(FakeRPC())
+        self.assertEqual(restored.thread_run("t1")["created_at"], "2026-09-07T01:00:00Z")
+        self.assertEqual(restored.thread_run("t1")["last_event_at"], expected_last)
+        await restored.close()
+
+    async def test_old_cache_derives_latest_run_from_retained_events(self):
+        workspace = self.make_workspace(FakeRPC())
+        await workspace.sync_machine("local")
+        machine = workspace.selected_machine
+        for seq, run_id, state in (
+            (1, "run-old", "running"),
+            (2, "run-old", "completed"),
+            (3, "run-new", "running"),
+        ):
+            workspace._apply_event(machine, {
+                "seq": seq, "thread_id": "t1", "run_id": run_id,
+                "kind": "run_state", "data": {"state": state},
+                "created_at": f"2026-09-07T04:00:0{seq}Z",
+            })
+        await workspace.close()
+        raw = json.loads(self.cache_path.read_text(encoding="utf-8"))
+        raw["machines"]["local"].pop("runs")
+        self.cache_path.write_text(json.dumps(raw), encoding="utf-8")
+
+        restored = self.make_workspace(FakeRPC())
+        self.assertEqual(restored.thread_run("t1")["id"], "run-new")
+        self.assertEqual(restored.thread_run("t1")["state"], "running")
+        self.assertEqual(restored.thread_run("t1")["created_at"], "2026-09-07T04:00:03Z")
+        await restored.close()
+
+    async def test_legacy_midrun_output_does_not_invent_a_start_time(self):
+        workspace = self.make_workspace(FakeRPC())
+        await workspace.sync_machine("local")
+        workspace._apply_event(workspace.selected_machine, {
+            "seq": 40, "thread_id": "t1", "run_id": "run-mid",
+            "kind": "message_delta", "data": {"text": "already working"},
+            "created_at": "2026-09-07T04:10:00Z",
+        })
+        await workspace.close()
+        raw = json.loads(self.cache_path.read_text(encoding="utf-8"))
+        raw["machines"]["local"].pop("runs")
+        self.cache_path.write_text(json.dumps(raw), encoding="utf-8")
+
+        restored = self.make_workspace(FakeRPC())
+        self.assertEqual(restored.thread_run("t1")["id"], "run-mid")
+        self.assertIsNone(restored.thread_run("t1")["created_at"])
+        self.assertEqual(restored.thread_run("t1")["last_event_at"], "2026-09-07T04:10:00Z")
+        await restored.close()
+
+    async def test_terminal_retry_ack_overrides_older_same_run_event_and_survives_reload(self):
+        workspace = self.make_workspace(FakeRPC())
+        await workspace.sync_machine("local")
+        workspace._apply_event(workspace.selected_machine, {
+            "seq": 10, "thread_id": "t1", "run_id": "run-retry",
+            "kind": "run_state", "data": {"state": "running"},
+            "created_at": "2026-09-07T05:00:01Z",
+        })
+        workspace._apply_run_ack(workspace.selected_machine, "t1", {
+            "id": "run-retry", "state": "completed",
+            "created_at": "2026-09-07T05:00:00Z",
+            "updated_at": "2026-09-07T05:01:00Z",
+        })
+        self.assertEqual(workspace.thread_run("t1")["state"], "completed")
+        self.assertEqual(workspace.thread_run("t1")["ended_at"], "2026-09-07T05:01:00Z")
+        await workspace.close()
+
+        restored = self.make_workspace(FakeRPC())
+        self.assertEqual(restored.thread_run("t1")["state"], "completed")
+        self.assertEqual(restored.thread_run("t1")["ended_at"], "2026-09-07T05:01:00Z")
+        await restored.close()
+
+    async def test_older_different_run_ack_cannot_replace_newer_active_run(self):
+        workspace = self.make_workspace(FakeRPC())
+        await workspace.sync_machine("local")
+        workspace._apply_run_ack(workspace.selected_machine, "t1", {
+            "id": "run-new", "state": "running",
+            "created_at": "2026-09-07T06:02:00Z",
+            "updated_at": "2026-09-07T06:02:00Z",
+        })
+        workspace._apply_run_ack(workspace.selected_machine, "t1", {
+            "id": "run-old", "state": "completed",
+            "created_at": "2026-09-07T06:00:00Z",
+            "updated_at": "2026-09-07T06:01:00Z",
+        })
+        self.assertEqual(workspace.thread_run("t1")["id"], "run-new")
+        self.assertEqual(workspace.thread_run("t1")["state"], "running")
+        self.assertEqual(workspace.threads()[0]["state"], "running")
+        await workspace.close()
+
+    async def test_only_run_state_events_change_run_lifecycle(self):
+        workspace = self.make_workspace(FakeRPC())
+        await workspace.sync_machine("local")
+        machine = workspace.selected_machine
+        events = [
+            (1, "run_state", {"state": "running"}, "2026-09-07T02:00:00Z"),
+            (2, "status", {"state": "failed", "text": "provider detail"}, "2026-09-07T02:01:00Z"),
+            (3, "approval", {"state": "pending", "id": "a1"}, "2026-09-07T02:02:00Z"),
+            (4, "run_state", {"state": "awaiting_approval"}, "2026-09-07T02:03:00Z"),
+            (5, "approval", {"approval_state": "resolved", "decision": "allow"}, "2026-09-07T02:04:00Z"),
+            (6, "run_state", {"state": "completed"}, "2026-09-07T02:05:00Z"),
+        ]
+        for seq, kind, data, created_at in events:
+            workspace._apply_event(machine, {
+                "seq": seq, "thread_id": "t1", "run_id": "run-approval",
+                "kind": kind, "data": data, "created_at": created_at,
+            })
+            if seq == 2:
+                self.assertEqual(workspace.thread_run("t1")["state"], "running")
+
+        run = workspace.thread_run("t1")
+        self.assertEqual(run["state"], "completed")
+        self.assertEqual(run["created_at"], "2026-09-07T02:00:00Z")
+        self.assertEqual(run["last_event_at"], "2026-09-07T02:05:00Z")
+        self.assertEqual(run["ended_at"], "2026-09-07T02:05:00Z")
+        self.assertEqual(workspace.threads()[0]["state"], "completed")
+        await workspace.close()
+
+    async def test_late_send_ack_does_not_regress_completion_and_new_id_wins(self):
+        rpc = FakeRPC()
+        rpc.send_started = asyncio.Event()
+        rpc.send_gate = asyncio.Event()
+        workspace = self.make_workspace(rpc)
+        await workspace.sync_machine("local")
+        workspace.switch("local", "p1", "t1")
+
+        sending = asyncio.create_task(workspace.send_prompt("race"))
+        await rpc.send_started.wait()
+        workspace._apply_event(workspace.selected_machine, {
+            "seq": 1,
+            "thread_id": "t1",
+            "run_id": "run1",
+            "kind": "run_state",
+            "data": {"state": "completed"},
+            "created_at": "2026-09-07T03:01:00Z",
+        })
+        rpc.send_gate.set()
+        await sending
+        self.assertEqual(workspace.thread_run()["state"], "completed")
+        self.assertEqual(workspace.thread_run()["ended_at"], "2026-09-07T03:01:00Z")
+
+        rpc.send_results.append({
+            "id": "run2", "thread_id": "t1", "state": "running",
+            "created_at": "2026-09-07T03:02:00Z", "updated_at": "2026-09-07T03:02:00Z",
+        })
+        await workspace.send_prompt("next run")
+        self.assertEqual(workspace.thread_run()["id"], "run2")
+        self.assertEqual(workspace.thread_run()["state"], "running")
+        workspace._apply_event(workspace.selected_machine, {
+            "seq": 2, "thread_id": "t1", "run_id": "run1", "kind": "run_state",
+            "data": {"state": "completed"}, "created_at": "2026-09-07T03:01:01Z",
+        })
+        self.assertEqual(workspace.thread_run()["id"], "run2")
+        self.assertEqual(workspace.selected_thread["state"], "running")
+        await workspace.close()
+
+    async def test_uncertain_send_is_never_replayed_during_reload_or_sync(self):
+        first_rpc = FakeRPC()
+        workspace = self.make_workspace(first_rpc)
+        await workspace.sync_machine("local")
+        workspace.switch("local", "p1", "t1")
+        first_rpc.send_failures.append(ConnectionError("reply lost"))
+        with self.assertRaises(ConnectionError):
+            await workspace.send_prompt("only explicitly")
+        await workspace.close()
+
+        second_rpc = FakeRPC()
+        restored = self.make_workspace(second_rpc)
+        await restored.sync_machine("local")
+        self.assertEqual(second_rpc.sent_prompts, [])
+        self.assertTrue(restored.state["uncertain_sends"])
+        await restored.close()
+
     async def test_invalid_or_future_cache_is_preserved_and_rejected(self):
         self.cache_path.parent.mkdir(parents=True)
         self.cache_path.write_text("{broken", encoding="utf-8")
@@ -257,7 +506,7 @@ class WorkspaceTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_changed_server_identity_resets_event_sequence_but_keeps_drafts(self):
         rpc = FakeRPC([
-            {"seq": seq, "thread_id": "t1", "kind": "message", "data": {"role": "assistant", "text": f"old {seq}"}}
+            {"seq": seq, "thread_id": "t1", "run_id": "old-run", "kind": "message", "data": {"role": "assistant", "text": f"old {seq}"}, "created_at": f"2026-09-07T00:00:0{seq}Z"}
             for seq in range(1, 4)
         ])
         workspace = self.make_workspace(rpc)
@@ -265,16 +514,18 @@ class WorkspaceTests(unittest.IsolatedAsyncioTestCase):
         workspace.switch("local", "p1", "t1")
         workspace.set_draft("keep me")
         self.assertEqual(workspace.selected_machine["cursor"], 3)
+        self.assertEqual(workspace.thread_run()["id"], "old-run")
 
         rpc.server_id = "server-b"
         rpc.events = [
-            {"seq": seq, "thread_id": "t1", "kind": "message", "data": {"role": "assistant", "text": f"new {seq}"}}
+            {"seq": seq, "thread_id": "t1", "run_id": "new-run", "kind": "message", "data": {"role": "assistant", "text": f"new {seq}"}, "created_at": f"2026-09-07T00:01:0{seq}Z"}
             for seq in range(1, 3)
         ]
         await workspace.sync_machine("local")
         self.assertEqual(workspace.selected_machine["server_id"], "server-b")
         self.assertEqual(workspace.selected_machine["cursor"], 2)
         self.assertEqual([event["data"]["text"] for event in workspace.thread_events("t1")], ["new 1", "new 2"])
+        self.assertEqual(workspace.thread_run()["id"], "new-run")
         self.assertEqual(workspace.thread_view()["draft"], "keep me")
         await workspace.close()
 

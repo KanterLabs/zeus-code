@@ -44,6 +44,12 @@ Every Zeus turn starts its own app-server subprocess and performs this handshake
 4. Translate notifications until the matching `turn/completed` event.
 5. Close and reap the owned app-server process.
 
+Zeus emits a structured activity phase while this work happens: `starting` while
+starting or resuming app-server, `thinking` while Codex reasons, `working` for
+tool-item activity, and `responding` when Codex writes its answer. These events
+contain short display text and item IDs where Codex supplies them; reasoning
+content remains private.
+
 The app-server runs behind Zeus's supervised subprocess wrapper. If the daemon
 dies without running normal cleanup, the wrapper detects its missing parent and
 terminates the provider's complete process group before exiting.
@@ -77,12 +83,24 @@ Camel-case protocol names are accepted for the approval policy and service tier,
 and `effort`/`summary` are accepted as aliases. Unknown settings remain daemon
 data and are not forwarded into Codex configuration.
 
+When `approval_policy` and `sandbox` are absent or null, Zeus sends
+`approvalPolicy: "never"` and `sandbox: "danger-full-access"` on both
+`thread/start` and `thread/resume`. This is the app-server protocol equivalent of
+running interactive Codex with
+[`codex --yolo`](https://learn.chatgpt.com/docs/developer-commands?surface=cli):
+Codex does not ask for approvals and runs without a sandbox. Explicit settings
+still win, so a thread configured for `on-request`, `untrusted`, `read-only`, or
+`workspace-write` keeps those restrictions. Zeus does not modify the user's
+global Codex configuration.
+
 ## Events and approvals
 
 Agent-message deltas become `message_delta`; the authoritative completed agent
 item becomes `message`. Command output, file-patch updates, MCP progress, and item
-lifecycle notifications become `tool` events. Warnings and plan updates become
-`status` events. Raw reasoning is not exposed.
+lifecycle notifications become `tool` events with a protocol-derived
+`tool_type`. Warnings, plan updates, and the generic `starting`, `thinking`,
+`working`, and `responding` phases become `status` events. Raw reasoning is not
+exposed; reasoning lifecycle items produce only a `Thinking` status and item ID.
 
 The adapter handles all binary approval requests represented by the Zeus v1
 provider contract:

@@ -16,6 +16,7 @@ import time
 import uuid
 from collections.abc import Callable, Mapping
 from copy import deepcopy
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -26,6 +27,8 @@ from .paths import client_state_path
 CACHE_VERSION = 1
 MAX_EVENTS_PER_THREAD = 500
 EVENT_PAGE_SIZE = 200
+RUN_STATES = frozenset({"running", "awaiting_approval", "completed", "failed", "cancelled"})
+TERMINAL_RUN_STATES = frozenset({"completed", "failed", "cancelled"})
 
 
 def _initial_state() -> dict[str, Any]:
@@ -41,6 +44,7 @@ def _initial_state() -> dict[str, Any]:
                 "snapshot": {"projects": [], "threads": [], "approvals": [], "last_seq": 0},
                 "providers": {},
                 "events": {},
+                "runs": {},
                 "cursor": 0,
                 "server_id": None,
                 "last_error": None,
@@ -57,6 +61,18 @@ def _initial_state() -> dict[str, Any]:
 
 def _view_key(machine_id: str, thread_id: str) -> str:
     return f"{machine_id}:{thread_id}"
+
+
+def _timestamp(value: Any) -> float | None:
+    if not isinstance(value, str):
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed.timestamp()
+    except (ValueError, OverflowError, OSError):
+        return None
 
 
 class CacheStore:
@@ -99,9 +115,11 @@ class CacheStore:
             machine["connection"] = "disconnected"
             machine["stale"] = True
             machine.setdefault("events", {})
+            machine.setdefault("runs", {})
             machine.setdefault("snapshot", {"projects": [], "threads": [], "approvals": []})
             machine.setdefault("cursor", 0)
             machine.setdefault("server_id", machine.get("snapshot", {}).get("server_id"))
+            Workspace._derive_run_cache(machine)
         if state.get("selected_machine") not in state["machines"]:
             state["selected_machine"] = "local"
         state.setdefault("thread_views", {})
@@ -205,6 +223,7 @@ class Workspace:
             "snapshot": {"projects": [], "threads": [], "approvals": [], "last_seq": 0},
             "providers": {},
             "events": {},
+            "runs": {},
             "cursor": 0,
             "server_id": None,
             "last_error": None,
@@ -243,6 +262,29 @@ class Workspace:
         machine = self.machines[machine_id or self.selected_machine_id]
         thread_id = thread_id or self.state.get("selected_thread")
         return list(machine.get("events", {}).get(thread_id, [])) if thread_id else []
+
+    def thread_run(self, thread_id: str | None = None, machine_id: str | None = None) -> dict[str, Any]:
+        """Return cached metadata for the current or latest run of a thread.
+
+        An unknown run is represented by an empty dictionary.  Known records
+        expose ``id``, ``state``, ``created_at``, ``updated_at``,
+        ``last_event_at`` and ``ended_at``; timestamps remain ``None`` until a
+        daemon acknowledgement or durable event supplies them.
+        """
+        machine = self.machines[machine_id or self.selected_machine_id]
+        thread_id = thread_id or self.state.get("selected_thread")
+        if not thread_id:
+            return {}
+        cached = machine.get("runs", {}).get(thread_id)
+        if not isinstance(cached, dict):
+            return {}
+        public = {
+            key: cached.get(key)
+            for key in ("id", "state", "created_at", "updated_at", "last_event_at", "ended_at")
+        }
+        if cached.get("error") is not None:
+            public["error"] = cached["error"]
+        return deepcopy(public)
 
     def thread_view(self, thread_id: str | None = None, machine_id: str | None = None) -> dict[str, Any]:
         machine_id = machine_id or self.selected_machine_id
@@ -374,6 +416,7 @@ class Workspace:
         """Refresh snapshot and drain all event pages without skipping sequences."""
         machine = self.machines[machine_id]
         previous = deepcopy(machine)
+        baseline_runs = deepcopy(machine.get("runs", {}))
         baseline_ids = {
             field: {
                 record.get("id")
@@ -397,6 +440,7 @@ class Workspace:
                 # user-owned views/drafts, but never carry a cursor across it.
                 machine["cursor"] = 0
                 machine["events"] = {}
+                machine["runs"] = {}
                 for key, view in self.state.get("thread_views", {}).items():
                     if key.startswith(machine_id + ":"):
                         view["scroll"] = 0
@@ -428,6 +472,18 @@ class Workspace:
                 for event in bucket:
                     if int(event.get("seq", 0)) > snapshot_seq:
                         self._apply_thread_state(machine, event)
+            # A send can be accepted while this older snapshot is in flight.
+            # Its acknowledgement has no event sequence, so retain that newer
+            # local fact until the next snapshot observes it.
+            for thread_id, run in machine.get("runs", {}).items():
+                if not isinstance(run, dict) or run == baseline_runs.get(thread_id):
+                    continue
+                if not run.get("_acknowledged") or run.get("state") not in RUN_STATES:
+                    continue
+                for thread in snapshot.get("threads", []):
+                    if thread.get("id") == thread_id:
+                        thread["state"] = run["state"]
+                        break
             machine["connection"] = "connected"
             machine["stale"] = False
             machine["last_error"] = None
@@ -466,6 +522,178 @@ class Workspace:
                 break
 
     @staticmethod
+    def _derive_run_cache(machine: dict[str, Any]) -> None:
+        """Backfill run metadata when loading caches written before ``runs``."""
+        runs = machine.setdefault("runs", {})
+        events = [
+            event
+            for bucket in machine.get("events", {}).values()
+            if isinstance(bucket, list)
+            for event in bucket
+            if isinstance(event, dict)
+        ]
+        for event in sorted(events, key=lambda item: int(item.get("seq", 0))):
+            thread_id = event.get("thread_id")
+            run_id = event.get("run_id")
+            current = runs.get(thread_id) if thread_id else None
+            if run_id and (not isinstance(current, dict) or current.get("id") == run_id):
+                Workspace._apply_run_event(machine, event)
+            elif run_id and isinstance(current, dict):
+                current_seq = int(current.get("_last_seq", 0))
+                if int(event.get("seq", 0)) > current_seq and current.get("state") in TERMINAL_RUN_STATES:
+                    Workspace._apply_run_event(machine, event)
+
+    @staticmethod
+    def _new_run_record(run_id: str) -> dict[str, Any]:
+        return {
+            "id": run_id,
+            "state": None,
+            "created_at": None,
+            "updated_at": None,
+            "last_event_at": None,
+            "ended_at": None,
+            "_last_seq": 0,
+            "_acknowledged": False,
+        }
+
+    @staticmethod
+    def _apply_run_event(machine: dict[str, Any], event: dict[str, Any]) -> None:
+        thread_id = event.get("thread_id")
+        run_id = event.get("run_id")
+        if not thread_id or not run_id:
+            return
+        runs = machine.setdefault("runs", {})
+        current = runs.get(thread_id)
+        event_seq = int(event.get("seq", 0))
+        timestamp = event.get("created_at") if isinstance(event.get("created_at"), str) else None
+
+        if not isinstance(current, dict) or current.get("id") != run_id:
+            if isinstance(current, dict):
+                # An accepted active run is newer than any delayed cache page
+                # for the preceding run. A different run can follow only after
+                # the active run reaches a terminal state.
+                if current.get("_acknowledged") and current.get("state") not in TERMINAL_RUN_STATES:
+                    return
+                if event_seq <= int(current.get("_last_seq", 0)):
+                    return
+            current = Workspace._new_run_record(str(run_id))
+            runs[thread_id] = current
+        elif event_seq <= int(current.get("_last_seq", 0)):
+            # Cache loading replays retained events to backfill legacy records.
+            # Metadata already reconciled through this sequence is newer.
+            return
+
+        previous_seq = int(current.get("_last_seq", 0))
+        current["_last_seq"] = max(int(current.get("_last_seq", 0)), event_seq)
+        if timestamp:
+            data = event.get("data") if isinstance(event.get("data"), dict) else {}
+            is_initial_event = (
+                event.get("kind") == "message" and data.get("role") == "user"
+            ) or (
+                event.get("kind") == "run_state" and data.get("state") == "running"
+            )
+            if current.get("created_at") is None and previous_seq == 0 and is_initial_event:
+                current["created_at"] = timestamp
+            if _timestamp(timestamp) is not None and (
+                _timestamp(current.get("last_event_at")) is None
+                or _timestamp(timestamp) >= _timestamp(current.get("last_event_at"))
+            ):
+                current["last_event_at"] = timestamp
+
+        if event.get("kind") != "run_state":
+            return
+        data = event.get("data") if isinstance(event.get("data"), dict) else {}
+        state = data.get("state")
+        if state not in RUN_STATES:
+            return
+        current_state = current.get("state")
+        if current_state in TERMINAL_RUN_STATES and state not in TERMINAL_RUN_STATES:
+            return
+        event_time = _timestamp(timestamp)
+        updated_time = _timestamp(current.get("updated_at"))
+        if event_time is not None and updated_time is not None and event_time < updated_time:
+            return
+        current["state"] = state
+        if timestamp:
+            current["updated_at"] = timestamp
+            if state in TERMINAL_RUN_STATES:
+                current["ended_at"] = timestamp
+            elif current.get("ended_at") is not None:
+                current["ended_at"] = None
+        if data.get("error") is not None:
+            current["error"] = data["error"]
+
+    @staticmethod
+    def _apply_run_ack(machine: dict[str, Any], thread_id: str, result: Mapping[str, Any]) -> None:
+        run_id = result.get("id")
+        if not run_id:
+            return
+        runs = machine.setdefault("runs", {})
+        current = runs.get(thread_id)
+        same_run = isinstance(current, dict) and current.get("id") == run_id
+        if not same_run:
+            if isinstance(current, dict):
+                incoming_created = _timestamp(result.get("created_at"))
+                current_created = _timestamp(current.get("created_at"))
+                if (
+                    incoming_created is not None
+                    and current_created is not None
+                    and incoming_created <= current_created
+                ):
+                    return
+                if incoming_created is None and current.get("_acknowledged") and current.get("state") not in TERMINAL_RUN_STATES:
+                    return
+            current = Workspace._new_run_record(str(run_id))
+            runs[thread_id] = current
+
+        assert isinstance(current, dict)
+        acknowledged_state = result.get("state")
+        current_state = current.get("state")
+        acknowledged_time = _timestamp(result.get("updated_at"))
+        current_time = _timestamp(current.get("updated_at"))
+        accept_state = False
+        if acknowledged_state in RUN_STATES:
+            if current_state not in RUN_STATES:
+                accept_state = True
+            elif current_state in TERMINAL_RUN_STATES:
+                # A run never resumes after a terminal transition.
+                accept_state = (
+                    acknowledged_state in TERMINAL_RUN_STATES
+                    and acknowledged_time is not None
+                    and (current_time is None or acknowledged_time >= current_time)
+                )
+            elif acknowledged_time is not None and current_time is not None:
+                accept_state = acknowledged_time >= current_time
+            elif acknowledged_state in TERMINAL_RUN_STATES:
+                # Terminality remains monotonic when one side lacks a usable
+                # timestamp, as can happen with an older client cache.
+                accept_state = True
+            elif acknowledged_time is not None and current_time is None:
+                accept_state = True
+        if result.get("created_at") is not None:
+            current["created_at"] = result["created_at"]
+        if accept_state:
+            current["state"] = acknowledged_state
+            if result.get("updated_at") is not None:
+                current["updated_at"] = result["updated_at"]
+            if result.get("error") is not None:
+                current["error"] = result["error"]
+        current["_acknowledged"] = True
+        if current.get("state") in TERMINAL_RUN_STATES and current.get("ended_at") is None:
+            updated_at = current.get("updated_at")
+            if isinstance(updated_at, str):
+                current["ended_at"] = updated_at
+
+        # The send acknowledgement is authoritative immediately. It carries no
+        # transcript event, so only update the existing thread record.
+        state = current.get("state")
+        if state in RUN_STATES:
+            for thread in machine.get("snapshot", {}).get("threads", []):
+                if thread.get("id") == thread_id:
+                    thread["state"] = state
+                    break
+
+    @staticmethod
     def _apply_event(machine: dict[str, Any], event: dict[str, Any]) -> None:
         thread_id = event.get("thread_id")
         if not thread_id:
@@ -478,14 +706,21 @@ class Workspace:
         bucket.sort(key=lambda item: int(item.get("seq", 0)))
         if len(bucket) > MAX_EVENTS_PER_THREAD:
             del bucket[:-MAX_EVENTS_PER_THREAD]
+        Workspace._apply_run_event(machine, event)
         Workspace._apply_thread_state(machine, event)
 
     @staticmethod
     def _apply_thread_state(machine: dict[str, Any], event: dict[str, Any]) -> None:
+        if event.get("kind") != "run_state":
+            return
         thread_id = event.get("thread_id")
+        run_id = event.get("run_id")
+        current = machine.get("runs", {}).get(thread_id)
+        if run_id and isinstance(current, dict) and current.get("id") != run_id:
+            return
         data = event.get("data") if isinstance(event.get("data"), dict) else {}
         state = data.get("state")
-        if state:
+        if state in RUN_STATES:
             for thread in machine.get("snapshot", {}).get("threads", []):
                 if thread.get("id") == thread_id:
                     thread["state"] = state
@@ -622,6 +857,8 @@ class Workspace:
             self._changed(force=True)
             raise
         self.state["uncertain_sends"].pop(key, None)
+        if isinstance(result, Mapping):
+            self._apply_run_ack(self.machines[machine_id], thread["id"], result)
         # Do not erase a follow-up typed while this RPC was in flight.
         if view.get("draft") == prompt:
             view["draft"] = ""

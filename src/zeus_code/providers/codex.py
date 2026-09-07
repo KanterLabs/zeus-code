@@ -14,6 +14,7 @@ import shutil
 import signal
 from typing import Any
 
+from .. import __version__
 from ..process import spawn_supervised
 from .base import ProviderError, RunContext
 
@@ -229,7 +230,7 @@ class _AppServer:
                 "clientInfo": {
                     "name": "zeus_code",
                     "title": "Zeus Code",
-                    "version": "1.0.0",
+                    "version": __version__,
                 }
             },
         )
@@ -314,6 +315,13 @@ class CodexProvider:
         provider_thread_id: str | None = None
         turn_id: str | None = None
         try:
+            await context.emit(
+                "status",
+                {
+                    "phase": "starting",
+                    "text": "Resuming Codex" if context.session_id else "Starting Codex",
+                },
+            )
             await server.start()
             await server.initialize()
 
@@ -347,6 +355,7 @@ class CodexProvider:
             if not isinstance(turn, dict) or not isinstance(turn.get("id"), str):
                 raise ProviderError("Codex turn/start did not return a turn id.")
             turn_id = turn["id"]
+            await context.emit("status", {"phase": "thinking", "text": "Thinking"})
 
             for message in pending:
                 done = await self._handle_message(
@@ -382,24 +391,32 @@ class CodexProvider:
             params["model"] = context.model
         settings = context.settings
         approval = settings.get("approval_policy", settings.get("approvalPolicy"))
-        if approval is not None:
-            aliases = {
-                "onRequest": "on-request",
-                "unlessTrusted": "untrusted",
-                "on_request": "on-request",
-            }
+        aliases = {
+            "onRequest": "on-request",
+            "unlessTrusted": "untrusted",
+            "on_request": "on-request",
+        }
+        if approval is None:
+            params["approvalPolicy"] = "never"
+        else:
             params["approvalPolicy"] = (
-                aliases.get(approval, approval) if isinstance(approval, str) else approval
+                aliases.get(approval, approval)
+                if isinstance(approval, str)
+                else approval
             )
         sandbox = settings.get("sandbox")
-        if sandbox is not None:
-            aliases = {
-                "readOnly": "read-only",
-                "workspaceWrite": "workspace-write",
-                "dangerFullAccess": "danger-full-access",
-            }
+        aliases = {
+            "readOnly": "read-only",
+            "workspaceWrite": "workspace-write",
+            "dangerFullAccess": "danger-full-access",
+        }
+        if sandbox is None:
+            params["sandbox"] = "danger-full-access"
+        else:
             params["sandbox"] = (
-                aliases.get(sandbox, sandbox) if isinstance(sandbox, str) else sandbox
+                aliases.get(sandbox, sandbox)
+                if isinstance(sandbox, str)
+                else sandbox
             )
         personality = settings.get("personality")
         if personality is not None:
@@ -466,6 +483,7 @@ class CodexProvider:
                     "tool",
                     {
                         "item_id": item_id,
+                        "tool_type": "commandExecution",
                         "title": "Command",
                         "status": "running",
                         "text": delta,
@@ -484,11 +502,17 @@ class CodexProvider:
                     if method == "item/fileChange/outputDelta"
                     else "MCP tool"
                 )
+                tool_type = (
+                    "fileChange"
+                    if method == "item/fileChange/outputDelta"
+                    else "mcpToolCall"
+                )
                 is_delta = method == "item/fileChange/outputDelta"
                 await context.emit(
                     "tool",
                     {
                         "item_id": item_id,
+                        "tool_type": tool_type,
                         "title": title,
                         "status": "running",
                         "text": text,
@@ -503,6 +527,7 @@ class CodexProvider:
                     "tool",
                     {
                         "item_id": item_id,
+                        "tool_type": "fileChange",
                         "title": "File changes",
                         "status": "running",
                         "text": _json_text(changes),
@@ -556,6 +581,14 @@ class CodexProvider:
         if not isinstance(item_id, str) or not isinstance(item_type, str):
             return
         if item_type == "agentMessage":
+            await context.emit(
+                "status",
+                {
+                    "phase": "responding",
+                    "text": "Writing response",
+                    "item_id": item_id,
+                },
+            )
             if completed and isinstance(item.get("text"), str):
                 await context.emit(
                     "message",
@@ -566,7 +599,13 @@ class CodexProvider:
                     },
                 )
             return
-        if item_type in {"userMessage", "reasoning", "hookPrompt"}:
+        if item_type == "reasoning":
+            await context.emit(
+                "status",
+                {"phase": "thinking", "text": "Thinking", "item_id": item_id},
+            )
+            return
+        if item_type in {"userMessage", "hookPrompt"}:
             return
         if item_type == "plan":
             if completed and isinstance(item.get("text"), str):
@@ -574,6 +613,10 @@ class CodexProvider:
             return
 
         title, text = self._tool_display(item_type, item)
+        await context.emit(
+            "status",
+            {"phase": "working", "text": "Working", "item_id": item_id},
+        )
         raw_status = item.get("status")
         status_aliases = {
             "inProgress": "running",
@@ -584,6 +627,7 @@ class CodexProvider:
         status = status_aliases.get(raw_status, "completed" if completed else "running")
         event: dict[str, Any] = {
             "item_id": item_id,
+            "tool_type": item_type,
             "title": _clip(title, 2048),
             "status": status,
         }

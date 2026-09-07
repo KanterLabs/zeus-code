@@ -29,6 +29,19 @@ Choose a repository folder, name the conversation, and select `codex` or
 registered automatically and the new thread opens, ready for your first message.
 Use **F4** to change its model. Each conversation keeps its provider for its lifetime.
 
+Codex defaults to **YOLO**: full access and no approval prompts, equivalent to
+`codex --yolo`. This applies to new and resumed conversations unless the thread
+has explicit permission settings. The composer shows `YOLO` or
+`Custom permissions`; OpenCode keeps its existing provider settings.
+
+The activity strip above your message shows an animated indicator, elapsed run
+time, and the current action: starting, thinking, running a command, editing
+files, or writing a response. It shows the command name and time since the last
+provider update even while you browse older messages. Completion, failure,
+approval and cancellation stop the animation. **Ctrl+X** stops the selected run;
+**F7** expands tool output. The sidebar also shows activity in other threads.
+Offline machines show their last known state with a frozen timer.
+
 Form defaults are selected: typing replaces them, and **Ctrl+U** clears a field.
 **Tab / Shift+Tab** move between fields; **Enter** advances or submits the last
 field. Errors stay inside the form so you can correct a path and retry.
@@ -108,9 +121,11 @@ The interface supports terminals from 48×16; the sidebar appears from 90 column
 Mouse clicks work on buttons, workspace entries and form fields when supported
 by your terminal.
 
-To update a checkout, exit the client with **Ctrl+Q**, run `git pull --ff-only`,
-then run `./zeus-code` again. The 1.0.1 interface update is compatible with an
-already-running 1.0.0 daemon, so active tasks keep running during this update.
+To update a checkout, exit the client with **Ctrl+Q** and run `git pull --ff-only`.
+Version 1.0.2 also changes the daemon's Codex adapter. After active tasks finish,
+back up the database, run `./zeus-code stop`, then `./zeus-code serve --background`
+and reopen `./zeus-code`. Restart each remote daemon you update as well. History,
+provider session IDs and drafts are preserved; no database migration is needed.
 
 ## Approvals, diffs, and isolation
 
