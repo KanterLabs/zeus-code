@@ -38,6 +38,10 @@ class FakeRPC:
         self.server_id = "server-a"
         self.snapshot_started = None
         self.snapshot_gate = None
+        self.add_project_started = None
+        self.add_project_gate = None
+        self.create_thread_started = None
+        self.create_thread_gate = None
 
     async def connect(self):
         await asyncio.sleep(0)
@@ -79,6 +83,32 @@ class FakeRPC:
             if self.send_failures:
                 raise self.send_failures.pop(0)
             return {"id": "run1", "thread_id": params["thread_id"], "state": "running"}
+        if method == "add_project":
+            if self.add_project_started is not None:
+                self.add_project_started.set()
+            if self.add_project_gate is not None:
+                await self.add_project_gate.wait()
+            return {
+                "id": "p-new",
+                "name": params.get("name") or "new-repo",
+                "path": params["path"],
+                "branch": "main",
+                "created_at": "2026-09-07T00:01:00Z",
+                "updated_at": "2026-09-07T00:01:00Z",
+            }
+        if method == "create_thread":
+            if self.create_thread_started is not None:
+                self.create_thread_started.set()
+            if self.create_thread_gate is not None:
+                await self.create_thread_gate.wait()
+            return {
+                **thread("t-new", "idle"),
+                "title": params["title"],
+                "provider": params["provider"],
+                "model": params.get("model"),
+                "settings": params.get("settings"),
+                "isolated": params["worktree"],
+            }
         if method == "update_thread":
             return {**thread(params["thread_id"]), **params}
         if method == "history":
@@ -272,6 +302,96 @@ class WorkspaceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(workspace.selected_machine["connection"], "connected")
         rpc.snapshot_gate.set()
         await polling
+        await workspace.close()
+
+    async def test_first_project_is_cached_and_selected_without_full_sync(self):
+        rpc = FakeRPC()
+        workspace = self.make_workspace(rpc)
+
+        result = await workspace.add_project("/new-repo", "New Repo")
+
+        self.assertEqual(workspace.projects(), [result])
+        self.assertEqual(workspace.selected_project, result)
+        self.assertIsNone(workspace.selected_thread)
+        self.assertEqual([method for method, _ in rpc.calls], ["add_project"])
+        await workspace.close()
+
+    async def test_first_thread_is_cached_and_opened_without_full_sync(self):
+        rpc = FakeRPC()
+        workspace = self.make_workspace(rpc)
+        workspace.selected_machine["snapshot"]["projects"] = [
+            {"id": "p1", "name": "Repo", "path": "/repo"}
+        ]
+        workspace.selected_machine["snapshot"]["threads"] = []
+        workspace.switch("local", "p1")
+
+        result = await workspace.create_thread("p1", "New conversation", "codex")
+
+        self.assertEqual(workspace.threads(), [result])
+        self.assertEqual(workspace.selected_thread, result)
+        self.assertEqual([method for method, _ in rpc.calls], ["create_thread"])
+        await workspace.close()
+
+    async def test_inflight_project_creation_does_not_steal_new_machine_selection(self):
+        rpc = FakeRPC()
+        rpc.add_project_started = asyncio.Event()
+        rpc.add_project_gate = asyncio.Event()
+        workspace = self.make_workspace(rpc)
+        task = asyncio.create_task(workspace.add_project("/new-repo", machine_id="local"))
+        await rpc.add_project_started.wait()
+
+        remote = workspace.add_machine("box", "box")
+        workspace.switch(remote["id"])
+        rpc.add_project_gate.set()
+        result = await task
+
+        self.assertEqual(workspace.projects("local"), [result])
+        self.assertEqual(workspace.selected_machine_id, remote["id"])
+        self.assertIsNone(workspace.selected_project)
+        await workspace.close()
+
+    async def test_inflight_thread_creation_does_not_steal_new_thread_selection(self):
+        rpc = FakeRPC()
+        rpc.create_thread_started = asyncio.Event()
+        rpc.create_thread_gate = asyncio.Event()
+        workspace = self.make_workspace(rpc)
+        workspace.selected_machine["snapshot"]["projects"] = [
+            {"id": "p1", "name": "Repo", "path": "/repo"}
+        ]
+        workspace.selected_machine["snapshot"]["threads"] = [thread("t1"), thread("t2")]
+        workspace.switch("local", "p1", "t1")
+        task = asyncio.create_task(
+            workspace.create_thread("p1", "New conversation", "codex", machine_id="local")
+        )
+        await rpc.create_thread_started.wait()
+
+        workspace.switch("local", "p1", "t2")
+        rpc.create_thread_gate.set()
+        result = await task
+
+        self.assertIn(result, workspace.threads())
+        self.assertEqual(workspace.selected_thread["id"], "t2")
+        await workspace.close()
+
+    async def test_inflight_sync_cannot_erase_a_newly_cached_thread(self):
+        rpc = FakeRPC()
+        rpc.snapshot_started = asyncio.Event()
+        rpc.snapshot_gate = asyncio.Event()
+        workspace = self.make_workspace(rpc)
+        workspace.selected_machine["snapshot"]["projects"] = [
+            {"id": "p1", "name": "Repo", "path": "/repo"}
+        ]
+        workspace.selected_machine["snapshot"]["threads"] = [thread("t1")]
+        workspace.switch("local", "p1", "t1")
+        syncing = asyncio.create_task(workspace.sync_machine("local"))
+        await rpc.snapshot_started.wait()
+
+        result = await workspace.create_thread("p1", "New conversation", "codex")
+        rpc.snapshot_gate.set()
+        await syncing
+
+        self.assertIn(result, workspace.threads())
+        self.assertEqual(workspace.selected_thread, result)
         await workspace.close()
 
     async def test_scrolled_history_window_survives_more_than_live_cache_limit(self):

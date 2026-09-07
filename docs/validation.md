@@ -1,7 +1,7 @@
 # v1 validation
 
 Validated on September 7, 2026, on Linux with Python 3.14.4. The implemented
-application version is 1.0.0. The compatibility target is Python 3.11+ on Linux
+application version is 1.0.1. The compatibility target is Python 3.11+ on Linux
 and macOS; CI contains Python 3.11 and 3.14 jobs on `homelab`. macOS and the CI
 runner executions are not claimed as locally verified.
 
@@ -32,7 +32,7 @@ The standard-library unittest suite covers:
   bounded lines, snapshot assembly, source-checkout detached startup, CLI
   argument handling and actionable non-TTY errors.
 
-**107 tests passed** in the final full-suite run. Source compilation, whitespace
+**126 tests passed** in the 1.0.1 full-suite run. Source compilation, whitespace
 checks, standalone packaging, and all three launcher smoke checks also passed.
 The full suite, build, and bundle smoke also passed from an isolated clean
 checkout with no pre-existing scratch directory.
@@ -73,6 +73,24 @@ Approval and cancellation isolation are validated with deterministic structured
 provider fixtures. These are distinct from the live no-tools model checks.
 
 ## Terminal and packaging evidence
+
+The 1.0.1 interface adds a complete first-use creation form, automatic project
+selection, immediate display of successful creation, inline errors and editable
+defaults. Regression tests drive keyboard input through real Unix sockets and
+Git repositories, including the first provider reply, invalid-path correction,
+duplicate-submit prevention and Unicode/resize handling. The layout uses explicit
+dark backgrounds, readable thread names, visible actions and a framed composer.
+
+A real tmux pseudoterminal used the clickable New thread action, corrected an
+invalid path, created both provider threads, and switched between them. The
+exact Unicode multiline draft survived 120×32, 80×24, 60×20 and 48×16 terminal
+sizes, and Ctrl+Q exited from a modal. Screen captures were inspected for welcome,
+form and composer layout. The following earlier v1 checks continue to cover
+execution and storage.
+Additional terminal checks verified the actual caret column and preserved draft
+for CJK, emoji and combining characters in both the form and composer. The
+standalone bundle also opened the welcome screen and creation form and exited
+cleanly.
 
 A real 120×35 pseudoterminal session opened both provider threads, entered an
 unsent Unicode draft with a newline, switched to the other thread and typed a
