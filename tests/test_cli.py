@@ -13,6 +13,9 @@ from unittest import mock
 from zeus_code import cli
 
 
+WORK = Path(__file__).resolve().parents[1] / ".work"
+
+
 class FakeClient:
     instances: list["FakeClient"] = []
 
@@ -37,11 +40,10 @@ class FakeClient:
 class CLITests(unittest.TestCase):
     def setUp(self) -> None:
         FakeClient.instances.clear()
-        self.temp = tempfile.TemporaryDirectory(dir=Path.cwd() / ".work")
+        WORK.mkdir(parents=True, exist_ok=True)
+        self.temp = tempfile.TemporaryDirectory(dir=WORK)
+        self.addCleanup(self.temp.cleanup)
         self.data_dir = Path(self.temp.name)
-
-    def tearDown(self) -> None:
-        self.temp.cleanup()
 
     def run_rpc(self, arguments: list[str]) -> tuple[int, FakeClient]:
         with mock.patch.object(cli, "RPCClient", FakeClient), mock.patch("builtins.print"):

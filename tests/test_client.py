@@ -10,9 +10,18 @@ from pathlib import Path
 from zeus_code.client import MAX_MESSAGE_BYTES, RPCClient, RPCError
 
 
+WORK = Path(__file__).resolve().parents[1] / ".work"
+
+
+def temporary_directory() -> tempfile.TemporaryDirectory[str]:
+    WORK.mkdir(parents=True, exist_ok=True)
+    return tempfile.TemporaryDirectory(dir=WORK)
+
+
 class RPCClientTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self) -> None:
-        self.temp = tempfile.TemporaryDirectory(dir=Path.cwd() / ".work")
+        self.temp = temporary_directory()
+        self.addCleanup(self.temp.cleanup)
         self.data_dir = Path(self.temp.name)
         self.calls: list[dict] = []
         self.server_id = str(uuid.uuid4())
@@ -77,11 +86,11 @@ class RPCClientTests(unittest.IsolatedAsyncioTestCase):
                 await writer.wait_closed()
 
         self.server = await asyncio.start_unix_server(handler, path=str(self.data_dir / "server.sock"))
+        self.addAsyncCleanup(self._close_server)
 
-    async def asyncTearDown(self) -> None:
+    async def _close_server(self) -> None:
         self.server.close()
         await self.server.wait_closed()
-        self.temp.cleanup()
 
     async def test_connect_negotiates_and_calls_use_uuid_ids(self) -> None:
         async with RPCClient(self.data_dir) as client:
@@ -154,7 +163,7 @@ class RPCClientTests(unittest.IsolatedAsyncioTestCase):
 
 class BadHelloTests(unittest.IsolatedAsyncioTestCase):
     async def test_missing_server_id_is_rejected(self) -> None:
-        with tempfile.TemporaryDirectory(dir=Path.cwd() / ".work") as directory:
+        with temporary_directory() as directory:
             async def handler(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
                 request = json.loads(await reader.readline())
                 writer.write(json.dumps({"id": request["id"], "result": {"protocol_version": 1}}).encode() + b"\n")
