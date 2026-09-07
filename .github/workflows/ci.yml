@@ -1,0 +1,39 @@
+name: Verify v1
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: homelab
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ['3.11', '3.14']
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '${{ matrix.python }}'
+      - name: Validate source and lifecycle
+        env:
+          PYTHONPATH: src
+        run: |
+          python -m compileall -q src tests scripts
+          python -m unittest discover -s tests -v
+          git diff --check
+      - name: Build and smoke-test standalone release
+        run: |
+          python scripts/build.py
+          python dist/zeus-code.pyz --version
+          python scripts/smoke.py --executable dist/zeus-code.pyz

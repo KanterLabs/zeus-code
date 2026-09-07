@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "zeus-code"
+version = "1.0.0"
+description = "A persistent terminal workspace for Codex and OpenCode across local and SSH machines"
+readme = "README.md"
+requires-python = ">=3.11"
+authors = [{name = "Shane Kanterman"}]
+dependencies = []
+classifiers = [
+  "Environment :: Console :: Curses",
+  "Programming Language :: Python :: 3",
+  "Operating System :: POSIX :: Linux",
+  "Operating System :: MacOS",
+]
+
+[project.scripts]
+zeus-code = "zeus_code.cli:main"
+
+[project.urls]
+Repository = "https://github.com/KanterLabs/zeus-code"
+
+[tool.setuptools.packages.find]
+where = ["src"]
