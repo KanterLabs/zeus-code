@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections import deque
 from dataclasses import dataclass, field
+import re
 import unicodedata
 from typing import Any
 
@@ -14,6 +15,15 @@ MAX_RENDER_LINES = 10_000
 MAX_RENDER_EVENTS = 20_000
 MAX_ENTRY_CHARS = 512 * 1024
 OMITTED_MARKER = "[… earlier output omitted …]"
+
+
+class TranscriptLine(str):
+    """String-compatible line carrying its event role for terminal styling."""
+
+    def __new__(cls, text: str, kind: str):
+        line = super().__new__(cls, text)
+        line.kind = kind
+        return line
 
 
 @dataclass
@@ -79,7 +89,13 @@ def render_transcript(
         lines, truncated = _entry_lines(entry, width, expanded_tools, available)
         if truncated:
             output_omitted = True
-        retained.extendleft(reversed(lines))
+        role = str(entry.data.get("role", "assistant")).casefold()
+        if role == "agent":
+            role = "assistant"
+        semantic = role if entry.kind in {"message", "message_delta"} else entry.kind
+        if entry.kind == "run_state" and entry.data.get("state") == "failed":
+            semantic = "error"
+        retained.extendleft(reversed([TranscriptLine(line, semantic) for line in lines]))
         if truncated:
             break
 
@@ -196,12 +212,22 @@ def _entry_lines(
             return [], False
         prefix = "you: " if role == "user" else "agent: "
         text, clipped = _joined_text(entry.text_parts)
-        return _wrapped(prefix + text, width, limit, clipped)
+        return _message_wrapped(prefix, text, width, limit, clipped)
 
     if kind == "tool":
         title = _safe_text(data.get("title") or data.get("name") or "tool")
         status = _safe_text(data.get("status") or "")
         header = f"▸ {title}  {status}".rstrip()
+        if not expanded_tools and sum(_cell_width(c) for c in header) > width * 2:
+            header = f"▸ {status} · {title}" if status else f"▸ {title}"
+            chunks = iter(_wrapped_line_chunks(header.replace("\n", " ↵ "), width))
+            lines = [next(chunks, "") for _ in range(min(2, limit))]
+            if lines:
+                tail = lines[-1]
+                while tail and sum(_cell_width(c) for c in tail) >= width:
+                    tail = tail[:-1]
+                lines[-1] = tail + "…"
+            return lines, False
         lines, clipped = _wrapped(header, width, limit, False)
         if expanded_tools and len(lines) < limit:
             detail, detail_clipped = _joined_text(entry.text_parts)
@@ -230,6 +256,8 @@ def _entry_lines(
         error = data.get("error")
         if state == "failed" and error:
             return _wrapped(f"× failed: {_safe_text(error)}", width, limit, False)
+        if state in {"running", "starting"}:
+            return [], False  # The persistent activity strip owns live phases.
         glyph = {"completed": "✓", "cancelled": "■"}.get(state, "—")
         return _wrapped(f"{glyph} {state}", width, limit, False)
 
@@ -242,6 +270,32 @@ def _entry_lines(
 
     summary = data.get("text") or data.get("message") or kind.replace("_", " ")
     return _wrapped(_safe_text(summary), width, limit, False)
+
+
+def _message_wrapped(prefix: str, text: str, width: int, limit: int, clipped: bool) -> tuple[list[str], bool]:
+    """Preserve literal code while giving Markdown lists hanging continuation lines."""
+    lines: deque[str] = deque(maxlen=max(0, limit))
+    produced = 0
+    fenced = False
+    for index, logical in enumerate(text.split("\n")):
+        expanded = logical.expandtabs(4)
+        is_fence = bool(re.match(r"^\s*(```|~~~)", expanded))
+        if is_fence:
+            fenced = not fenced
+        lead = prefix if index == 0 else ""
+        marker = None if fenced or is_fence else re.match(r"^(\s*(?:[-*+] |\d+[.)] |#{1,6} |[>] ))", expanded)
+        chunks = iter(_wrapped_line_chunks(lead + expanded, width))
+        first = next(chunks, "")
+        lines.append(first)
+        produced += 1
+        indent = min(len(lead) + len(marker.group(1)), max(0, width // 2)) if marker else 0
+        if marker:
+            remainder = (lead + expanded)[len(first):]
+            chunks = _wrapped_line_chunks(remainder, max(1, width - indent)) if remainder else iter(())
+        for chunk in chunks:
+            lines.append(" " * indent + chunk)
+            produced += 1
+    return list(lines), clipped or produced > limit
 
 
 def _joined_text(parts: list[str]) -> tuple[str, bool]:

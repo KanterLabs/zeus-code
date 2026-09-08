@@ -106,6 +106,7 @@ def build_release(root: Path, output: Path) -> tuple[Path, Path, Path]:
         json.dumps(
             {
                 "python_requires": PYTHON_REQUIRES,
+                "protocol_version": read_literal_assignment(root / "src/zeus_code/__init__.py", "PROTOCOL_VERSION", int),
                 "schema_version": schema_version,
                 "version": version,
             },

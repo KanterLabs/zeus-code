@@ -89,7 +89,16 @@ class OpenCodeFixture:
                     "all": [
                         {
                             "id": "opencode",
-                            "models": {"big-pickle": {"name": "Big Pickle"}},
+                            "models": {
+                                "big-pickle": {
+                                    "name": "Big Pickle",
+                                    "variants": {
+                                        "low": {"reasoningEffort": "low"},
+                                        "high": {"reasoningEffort": "high"},
+                                    },
+                                },
+                                "steady": {"name": "Steady"},
+                            },
                         },
                         {"id": "unconfigured", "models": {"paid": {"name": "Paid"}}},
                     ],
@@ -427,7 +436,22 @@ class OpenCodeProviderTests(unittest.IsolatedAsyncioTestCase):
         provider = FixtureProvider(fixture)
         result = await provider.check()
         self.assertEqual(result["version"], "1.18.26")
-        self.assertEqual(result["models"], [{"id": "opencode/big-pickle", "name": "Big Pickle"}])
+        self.assertEqual(
+            result["models"],
+            [
+                {
+                    "id": "opencode/big-pickle",
+                    "name": "Big Pickle",
+                    "variants": ["low", "high"],
+                    "is_default": True,
+                },
+                {
+                    "id": "opencode/steady",
+                    "name": "Steady",
+                    "is_default": False,
+                },
+            ],
+        )
         self.assertFalse(any(path.endswith("prompt_async") for _, path, _ in fixture.requests))
 
     async def test_missing_binary_is_isolated_discovery_failure(self) -> None:

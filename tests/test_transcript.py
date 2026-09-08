@@ -4,6 +4,34 @@ from zeus_code.transcript import MAX_RENDER_LINES, render_transcript
 
 
 class TranscriptTests(unittest.TestCase):
+    def test_semantic_roles_do_not_come_from_untrusted_text_prefixes(self):
+        events = [self.event('r', 'message', {'role': 'assistant', 'text': 'you: not a user message'}),
+                  self.event('r', 'run_state', {'state': 'running'}),
+                  self.event('r', 'run_state', {'state': 'failed', 'error': 'Could not start'})]
+        lines = render_transcript(events, 80)
+        self.assertEqual(lines[0].kind, 'assistant')
+        self.assertEqual(lines[1].kind, 'error')
+        self.assertNotIn('— running', lines)
+
+    def test_list_hanging_wrap_and_code_fence_indentation(self):
+        events = [self.event('r', 'message', {'role': 'assistant',
+                    'text': '- a long list item with continuation words\n```python\n    value = 1\n\n```'})]
+        lines = render_transcript(events, 24)
+        self.assertTrue(lines[1].startswith('         '))
+        self.assertIn('```python', lines)
+        self.assertIn('    value = 1', lines)
+        self.assertIn('', lines)
+        self.assertEqual(lines[-1], '```')
+
+    def test_long_collapsed_command_is_compact_but_failure_remains_visible(self):
+        event = self.event('r', 'tool', {'item_id': 'cmd', 'title': 'long-path/' * 50,
+                           'status': 'failed', 'text': 'details here'})
+        collapsed = render_transcript([event], 30)
+        self.assertEqual(len(collapsed), 2)
+        self.assertIn('failed', collapsed[0])
+        self.assertTrue(collapsed[-1].endswith('…'))
+        self.assertIn('details here', '\n'.join(render_transcript([event], 30, True)))
+
     def test_streamed_message_is_replaced_once_by_authoritative_final(self):
         events = [
             self.event(1, "message", {"role": "user", "text": "Please check it."}),

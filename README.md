@@ -13,15 +13,18 @@ polished terminal UI for v1.1, followed by workspace and remote improvements.
 
 ## Start
 
-The latest fixes are on GitHub Releases; npm publishing is awaiting trusted
-publisher configuration. If you already downloaded v1.0.8, update and open with:
+Download the latest GitHub release and install a persistent command:
 
 ```sh
-python3 zeus-code-1.0.8.pyz update --install-dir ~/.local/bin
-~/.local/bin/zeus-code connect dev
+curl -fL https://github.com/KanterLabs/zeus-code/releases/latest/download/zeus-code.pyz -o /tmp/zeus-code.pyz
+python3 /tmp/zeus-code.pyz update --install-dir "$HOME/.local/bin"
+export PATH="$HOME/.local/bin:$PATH"
+zeus-code
 ```
 
-Replace `dev` with your SSH destination. This keeps existing projects and threads.
+To work on your development VM, run `zeus-code connect dev` instead. Replace
+`dev` with your SSH destination. Existing projects and threads are preserved.
+Add `~/.local/bin` to your shell's PATH permanently if it is not already there.
 
 Requires **Python 3.11+**, Git, and a terminal with curses support on Linux or
 macOS. Use WSL on Windows. Install and authenticate Codex, OpenCode, or both on
@@ -29,25 +32,8 @@ each machine where tasks will execute. Zeus uses those existing credentials.
 It has no third-party Python runtime dependencies, web dashboard, or database
 service to configure.
 
-With **Node.js 18+** installed, run from any directory without cloning:
-
-```sh
-npx github:KanterLabs/zeus-code
-```
-
-If an older npm installation fails while preparing the GitHub package, use:
-
-```sh
-npm exec --yes --package=github:KanterLabs/zeus-code -- zeus-code
-```
-
-The launcher verifies the bundled application and starts the local daemon before
-opening the workspace. Python 3.11+ with curses is still required; set
-`ZEUS_CODE_PYTHON` to a Python executable if it is not named `python3` or `python`.
-Runtime bundles live outside npm's temporary cache, so clearing that cache does
-not interrupt the daemon. Existing conversations and settings are preserved.
-
-The npm package name is **`@kanterlabs/zeus-code`**. After its first npm release:
+The npm package is **`@kanterlabs/zeus-code`**. Its latest published version
+may lag GitHub while trusted publishing is being configured. With Node.js 18+:
 
 ```sh
 npx @kanterlabs/zeus-code@latest
@@ -55,6 +41,11 @@ npx @kanterlabs/zeus-code@latest
 npm install -g @kanterlabs/zeus-code
 zeus-code
 ```
+
+The npm launcher verifies its bundled application and opens the workspace.
+Python 3.11+ with curses is still required; set `ZEUS_CODE_PYTHON` if Python is
+not named `python3` or `python`. Runtime bundles live outside npm's temporary
+cache, so clearing that cache does not interrupt daemon work.
 
 Use the scoped name: the unscoped `zeus-code` package belongs to another project.
 `npx install zeus-code` is not an npm installation command.
@@ -70,7 +61,11 @@ Press **Enter** on the welcome screen, **Ctrl+N**, or click **New thread**.
 Choose a repository folder, name the conversation, and select `codex` or
 `opencode` with the arrow keys. Press **Ctrl+S** to create it. The repository is
 registered automatically and the new thread opens, ready for your first message.
-Use **F4** to change its model. Each conversation keeps its provider for its lifetime.
+The composer shows the configured model and supported reasoning setting.
+Click it or press **F4** to search discovered models and choose supported settings.
+**Provider default** means Zeus sends no model override; it does not guess which
+model the provider resolves. Each conversation keeps its provider for its lifetime.
+Model changes are unavailable while that conversation has an active run.
 
 Codex defaults to **YOLO**: full access and no approval prompts, equivalent to
 `codex --yolo`. This applies to new and resumed conversations unless the thread
@@ -84,6 +79,18 @@ provider update even while you browse older messages. Completion, failure,
 approval and cancellation stop the animation. **Ctrl+X** stops the selected run;
 **F7** expands tool output. The sidebar also shows activity in other threads.
 Offline machines show their last known state with a frozen timer.
+
+When Codex launches child agents, a compact summary shows their activity.
+**F9** expands their identities, states and public results inside the conversation.
+Short terminals open a scrollable detail view instead.
+Zeus displays automatic agents; it does not launch workers itself.
+
+**F5** opens the attention inbox across machines. Unread results remain unread
+until their conversation is visible at the latest messages. Browsing history or
+opening a menu keeps them unread. Pending approvals remain explicit.
+**Ctrl+K** opens a searchable command palette with the selected action's target
+and any reason it is unavailable. Choose **Choose theme** for dark, light,
+terminal-default or monochrome colors.
 
 Form defaults are selected: typing replaces them, and **Ctrl+U** clears a field.
 **Tab / Shift+Tab** move between fields; **Enter** advances or submits the last
@@ -107,39 +114,33 @@ with `python3 -m pip install .` in your chosen Python environment.
 ## Update
 
 For npm installations, use `npm install -g @kanterlabs/zeus-code@latest`, or run
-`npx @kanterlabs/zeus-code@latest` each time. GitHub users can run
-`npx github:KanterLabs/zeus-code` again. The npm launcher uses its own bundled
+`npx @kanterlabs/zeus-code@latest` each time. The npm launcher uses its own bundled
 version. Running its `update` command installs a separate standalone command in
 `~/.local/bin`; it does not replace files inside the npm package or runtime cache.
 
-With v1.0.3 or newer installed:
+With a standalone command installed:
 
 ```sh
 zeus-code update
 ```
 
-This installs the latest stable GitHub release after verifying its checksums
-and version metadata. An installed standalone bundle updates in place. From a
-source checkout or Python package installation, it installs the standalone
-command into `~/.local/bin`; the checkout remains available for development.
-Use `--install-dir DIR` to choose another directory, or `zeus-code update --check`
-to check availability without changing files.
+This verifies the latest stable GitHub release and installs a launcher pointing
+to an immutable runtime. Compatible client updates can happen while daemon work
+continues; the existing daemon keeps its runtime until you restart it after work
+finishes. From a checkout or Python package, the standalone command is installed
+in `~/.local/bin`. Use `--install-dir DIR` to choose a directory or
+`zeus-code update --check` to check availability without installing.
 
-Stop the local daemon before installing an update. The updater refuses to
-replace the application while the daemon is running. Choose when to stop active
-work, then run:
+Older releases may refuse updates while a daemon runs. Use the download command
+above once to get the new updater. If a legacy daemon is executing the exact
+archive being replaced, Zeus installs the new runtime and prints its runnable
+path, deferring that entrypoint replacement until the old daemon exits. It never
+stops active work automatically.
 
-```sh
-zeus-code stop
-zeus-code update
-zeus-code serve --background
-```
-
-The previous executable is retained, and an existing Zeus database gets an
-integrity-checked SQLite backup before replacement. The updater accepts releases
-with the same database schema so the retained binary remains compatible. It
-never resets or restores user data. Run the command separately on each machine;
-`--host` is not supported for updates.
+The previous executable is retained. Existing databases receive an
+integrity-checked SQLite backup before replacement. Releases must have a
+compatible database schema and RPC protocol; the updater never resets or
+restores data. Run updates separately on each machine; `--host` is not supported.
 
 To get this command from an older source checkout, run these commands **inside
 that checkout** once:
@@ -201,6 +202,7 @@ A disconnected client does not imply that the remote agent has stopped.
 
 | Key | Action |
 | --- | --- |
+| Ctrl+K | Search commands for the selected workspace or conversation |
 | Ctrl+P | Search threads across all cached machines and projects |
 | Ctrl+N | Choose a repository and create a named provider thread |
 | Ctrl+O / Ctrl+G | Open project / machines |
@@ -210,9 +212,11 @@ A disconnected client does not imply that the remote agent has stopped.
 | Ctrl+D | Review changed files and unified diff |
 | F2 / F3 / F4 | Machines / add project / model settings |
 | Ctrl+R / Ctrl+A in sidebar | Rename / archive selected thread |
+| F5 | Attention inbox across machines |
 | F6 | Open pending approval |
 | F7 | Expand/collapse tool output |
 | F8 | Toggle Enter behavior; use Ctrl+S to send in multiline mode |
+| F9 | Expand/collapse automatic subagent details |
 | Ctrl+X | Cancel only the selected thread's current run |
 | Ctrl+Q | Exit the client; daemon work continues |
 | F1 | Keyboard help |
@@ -228,7 +232,7 @@ Mouse clicks work on buttons, workspace entries and form fields when supported
 by your terminal.
 
 To update a checkout, exit the client with **Ctrl+Q** and run `git pull --ff-only`.
-Version 1.0.2 also changes the daemon's Codex adapter. After active tasks finish,
+When a release changes daemon behavior, wait for active tasks to finish,
 back up the database, run `./zeus-code stop`, then `./zeus-code serve --background`
 and reopen `./zeus-code`. Restart each remote daemon you update as well. History,
 provider session IDs and drafts are preserved; no database migration is needed.

@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+from copy import deepcopy
+from datetime import datetime, timezone
 import fcntl
 import json
 import os
@@ -11,6 +13,7 @@ import signal
 import socket
 import sqlite3
 import stat
+import sys
 import time
 from typing import Any, Callable
 import uuid
@@ -26,6 +29,8 @@ MAX_PROMPT = 128 * 1024
 MAX_CLIENTS = 64
 MAX_RUNS = 8
 ACTIVE_STATES = {"running", "awaiting_approval"}
+PROVIDER_REFRESH_SECONDS = 30.0
+PROVIDER_CHECK_TIMEOUT = 20.0
 
 
 class RequestError(ValueError):
@@ -62,7 +67,10 @@ class Daemon:
         self.clients: set[asyncio.StreamWriter] = set()
         self.client_tasks: set[asyncio.Task] = set()
         self._lock_fd: int | None = None
-        self._provider_cache: tuple[float, dict] | None = None
+        self._provider_cache: dict[str, dict[str, Any]] = {}
+        self._provider_checked_at: dict[str, float] = {}
+        self._provider_checks: dict[str, asyncio.Task[None]] = {}
+        self._provider_refresh_task: asyncio.Task[None] | None = None
         self._closing = False
 
     def _provider_factories(self) -> dict[str, Callable]:
@@ -91,11 +99,23 @@ class Daemon:
                 sock.unlink()
             self.store = Store(self.data_dir)
             self.store.recover_interrupted()
-            self.server = await asyncio.start_unix_server(self._handle_client, path=str(sock), limit=MAX_LINE + 1)
+            server_options: dict[str, Any] = {"limit": MAX_LINE + 1}
+            if sys.version_info >= (3, 13):
+                # Keep the path as the ownership marker until close() finishes
+                # cleanup and is ready to release server.lock. Python 3.13+
+                # otherwise removes it as soon as AbstractServer.close() runs.
+                server_options["cleanup_socket"] = False
+            self.server = await asyncio.start_unix_server(
+                self._handle_client, path=str(sock), **server_options
+            )
             sock.chmod(0o600)
             metadata = self.data_dir / "server.json"
             metadata.write_text(json.dumps(self.hello()) + "\n")
             metadata.chmod(0o600)
+            self._start_provider_refresh()
+            self._provider_refresh_task = asyncio.create_task(
+                self._provider_refresh_loop(), name="zeus-provider-refresh"
+            )
             return True
         except BaseException:
             await self.close()
@@ -202,6 +222,9 @@ class Daemon:
             return result
         if method == "providers":
             return await self._check_providers()
+        if method == "refresh_providers":
+            self._start_provider_refresh()
+            return self._provider_status()
         if method == "discover_projects":
             return await discover_projects(_string(params, "root"))
         if method == "add_project":
@@ -334,22 +357,97 @@ class Daemon:
         return value
 
     async def _check_providers(self) -> dict:
-        if self._provider_cache and time.monotonic() - self._provider_cache[0] < 30:
-            return self._provider_cache[1]
+        """Return the current discovery snapshot without launching provider work."""
+        return self._provider_status()
 
-        async def check(factory: Callable) -> dict:
-            try:
-                return await asyncio.wait_for(factory().check(), timeout=20)
-            except asyncio.TimeoutError:
-                return {"available": False, "detail": "Provider discovery timed out. Check the provider CLI and its authentication on this machine."}
-            except Exception as exc:
-                return {"available": False, "detail": f"Provider setup check failed: {str(exc)[:500]}"}
-
-        factories = self._provider_factories()
-        results = await asyncio.gather(*(check(factory) for factory in factories.values()))
-        result = dict(zip(factories, results))
-        self._provider_cache = (time.monotonic(), result)
+    def _provider_status(self) -> dict[str, dict[str, Any]]:
+        now = time.monotonic()
+        result: dict[str, dict[str, Any]] = {}
+        for name in self._provider_factories():
+            cached = self._provider_cache.get(name)
+            task = self._provider_checks.get(name)
+            refreshing = task is not None and not task.done()
+            if cached is None:
+                entry: dict[str, Any] = {
+                    "available": False,
+                    "detail": "Provider discovery is in progress.",
+                    "status": "checking",
+                    "checked_at": None,
+                }
+                is_cached = False
+            else:
+                entry = deepcopy(cached)
+                checked = self._provider_checked_at.get(name)
+                is_cached = refreshing or checked is None or (
+                    now - checked >= PROVIDER_REFRESH_SECONDS
+                )
+            entry["cached"] = is_cached
+            entry["refreshing"] = refreshing
+            result[name] = entry
         return result
+
+    def _start_provider_refresh(self) -> None:
+        if self._closing:
+            return
+        for name, factory in self._provider_factories().items():
+            current = self._provider_checks.get(name)
+            if current is not None and not current.done():
+                continue
+            self._provider_checks[name] = asyncio.create_task(
+                self._check_provider(name, factory),
+                name=f"zeus-provider-check-{name}",
+            )
+
+    async def _check_provider(self, name: str, factory: Callable) -> None:
+        current = asyncio.current_task()
+        try:
+            try:
+                discovered = await asyncio.wait_for(
+                    factory().check(), timeout=PROVIDER_CHECK_TIMEOUT
+                )
+                if not isinstance(discovered, dict):
+                    raise TypeError("provider returned a non-object discovery result")
+                entry = deepcopy(discovered)
+            except asyncio.CancelledError:
+                raise
+            except asyncio.TimeoutError:
+                entry = {
+                    "available": False,
+                    "detail": (
+                        "Provider discovery timed out. Check the provider CLI and "
+                        "its authentication on this machine."
+                    ),
+                }
+            except Exception as exc:
+                entry = {
+                    "available": False,
+                    "detail": f"Provider setup check failed: {str(exc)[:500]}",
+                }
+            available = entry.get("available") is True
+            entry["available"] = available
+            if not isinstance(entry.get("detail"), str):
+                entry["detail"] = (
+                    "Provider is ready."
+                    if available
+                    else "Provider setup is unavailable."
+                )
+            entry["status"] = "ready" if available else "unavailable"
+            entry["checked_at"] = datetime.now(timezone.utc).isoformat().replace(
+                "+00:00", "Z"
+            )
+            self._provider_cache[name] = entry
+            self._provider_checked_at[name] = time.monotonic()
+        finally:
+            if self._provider_checks.get(name) is current:
+                self._provider_checks.pop(name, None)
+
+    async def _provider_refresh_loop(self) -> None:
+        try:
+            while True:
+                await asyncio.sleep(PROVIDER_REFRESH_SECONDS)
+                self._start_provider_refresh()
+        except asyncio.CancelledError:
+            raise
 
     async def _execute(self, thread: dict, run: dict, prompt: str) -> None:
         assert self.store is not None
@@ -426,6 +524,20 @@ class Daemon:
         if self.server is not None:
             self.server.close()
             await self.server.wait_closed()
+        if self._provider_refresh_task is not None:
+            self._provider_refresh_task.cancel()
+        provider_tasks = list(self._provider_checks.values())
+        for task in provider_tasks:
+            task.cancel()
+        pending_provider_tasks = [
+            task
+            for task in [self._provider_refresh_task, *provider_tasks]
+            if task is not None
+        ]
+        if pending_provider_tasks:
+            await asyncio.gather(*pending_provider_tasks, return_exceptions=True)
+        self._provider_refresh_task = None
+        self._provider_checks.clear()
         tasks = list(self.tasks.values())
         for task in tasks:
             task.cancel()

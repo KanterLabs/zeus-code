@@ -98,12 +98,12 @@ def _literal_assignment(path: Path, name: str, expected_type: type[Any]) -> Any:
     return value
 
 
-def source_metadata(root: Path = ROOT) -> tuple[str, int]:
+def source_metadata(root: Path = ROOT) -> tuple[str, int, int]:
     version = _literal_assignment(root / "src/zeus_code/__init__.py", "__version__", str)
     schema_version = _literal_assignment(
         root / "src/zeus_code/storage.py", "SCHEMA_VERSION", int
     )
-    return version, schema_version
+    return version, schema_version, _literal_assignment(root / "src/zeus_code/__init__.py", "PROTOCOL_VERSION", int)
 
 
 def sha256(path: Path) -> str:
@@ -150,6 +150,7 @@ def validate_bundle(
     *,
     source_version: str,
     source_schema_version: int,
+    source_protocol_version: int = 1,
 ) -> Bundle:
     if STABLE_VERSION_PATTERN.fullmatch(source_version) is None:
         raise ReleaseError(
@@ -169,10 +170,11 @@ def validate_bundle(
     metadata = _read_metadata(paths["release.json"])
     expected_metadata = {
         "python_requires": PYTHON_REQUIRES,
+        "protocol_version": source_protocol_version,
         "schema_version": source_schema_version,
         "version": source_version,
     }
-    if type(metadata.get("schema_version")) is not int or metadata != expected_metadata:
+    if type(metadata.get("schema_version")) is not int or type(metadata.get("protocol_version")) is not int or metadata != expected_metadata:
         raise ReleaseError(
             "release.json does not match source version, schema version, and Python requirement"
         )
@@ -191,7 +193,15 @@ def validate_bundle(
 
 
 def release_body() -> str:
-    return """## Update
+    return """## Terminal UX improvements
+
+- F4: searchable model and supported reasoning/variant settings, with a visible model indicator.
+- F9: automatic Codex child-agent activity and readable details, including short terminals.
+- F5: unread results and approvals across machines, with preserved drafts and history position.
+- Ctrl+K: searchable commands with clear targets, plus dark/light/terminal/monochrome themes.
+- Compatible client updates retain immutable runtimes while daemon work continues.
+
+## Update
 
 Check the available update without changing the installed executable:
 
@@ -202,11 +212,10 @@ zeus-code update --check
 Install the release:
 
 ```sh
-zeus-code stop
 zeus-code update
 ```
 
-Updates require the local daemon to be stopped. For a manual asset upgrade from an older installation, stop the daemon first and keep the existing executable until the new version is verified.
+Compatible client updates retain immutable runtimes so existing daemon work continues. If a legacy daemon uses the exact archive being replaced, Zeus installs the new runtime and explains the one-time deferred launcher switch; it never stops active work.
 
 ## First install from release assets
 
@@ -215,8 +224,8 @@ Download `zeus-code.pyz`, `release.json`, and `SHA256SUMS` from this release. Ve
 Then install the executable in a user-writable directory on `PATH`:
 
 ```sh
-mkdir -p ~/.local/bin
-install -m 755 zeus-code.pyz ~/.local/bin/zeus-code
+python3 zeus-code.pyz update --install-dir ~/.local/bin
+export PATH="$HOME/.local/bin:$PATH"
 zeus-code --version
 ```
 """
@@ -509,12 +518,13 @@ def main(argv: Sequence[str] | None = None) -> int:
             raise ReleaseError("GITHUB_REPOSITORY or --repository is required")
         if not args.tag:
             raise ReleaseError("GITHUB_REF_NAME or --tag is required")
-        source_version, schema_version = source_metadata()
+        source_version, schema_version, protocol_version = source_metadata()
         bundle = validate_bundle(
             args.dist,
             args.tag,
             source_version=source_version,
             source_schema_version=schema_version,
+            source_protocol_version=protocol_version,
         )
         client = GitHubClient(args.repository, os.environ.get("GITHUB_TOKEN", ""))
         published = publish_bundle(bundle, client)

@@ -32,6 +32,7 @@ class Form:
     choices: dict[str, list[str]] = field(default_factory=dict)
     labels: dict[str, str] = field(default_factory=dict)
     hints: dict[str, str] = field(default_factory=dict)
+    selectors: dict[str, Callable[[str], None]] = field(default_factory=dict)
     error: str = ""
     busy: bool = False
     progress: str = ""
@@ -43,6 +44,7 @@ class Form:
         self.choices = {name: list(options) for name, options in self.choices.items()}
         self.labels = dict(self.labels)
         self.hints = dict(self.hints)
+        self.selectors = dict(self.selectors)
 
         if not self.values:
             self.values = [default for _, default in self.fields]
@@ -99,6 +101,18 @@ class Form:
     def selected_default(self, selected: bool) -> None:
         self.replace_on_type = selected
 
+    def set_value(self, name: str, value: str, *, selected_default: bool = False) -> None:
+        """Replace one field value while keeping its caret state coherent."""
+        index = next((index for index, field in enumerate(self.fields) if field[0] == name), None)
+        if index is None:
+            raise KeyError(name)
+        options = self.choices.get(name)
+        if options and value not in options:
+            raise ValueError(f"{value!r} is not a valid choice for {name}")
+        self.values[index] = str(value)
+        self._cursors[index] = len(self.values[index])
+        self._replace_defaults[index] = bool(selected_default)
+
     def key(self, key: str | int) -> bool:
         """Handle one ``get_wch`` value and report whether it was consumed."""
         if self.busy:
@@ -109,6 +123,12 @@ class Form:
             return True
 
         if key in (curses.KEY_ENTER, 10, 13, "\n", "\r"):
+            if self.fields:
+                name = self.fields[self.index][0]
+                selector = self.selectors.get(name)
+                if selector is not None:
+                    selector(self.values[self.index])
+                    return True
             if self.fields and self.index < len(self.fields) - 1:
                 self.index += 1
             else:
@@ -132,6 +152,28 @@ class Form:
             return False
 
         name, _ = self.fields[self.index]
+        selector = self.selectors.get(name)
+        if selector is not None:
+            if key in (curses.KEY_RIGHT, 32, " "):
+                selector(self.values[self.index])
+            # Selector fields are display-only.  Consume editing input so the
+            # value can only be replaced by the selector's validated result.
+            return key in (
+                curses.KEY_LEFT,
+                curses.KEY_RIGHT,
+                curses.KEY_HOME,
+                curses.KEY_END,
+                curses.KEY_BACKSPACE,
+                curses.KEY_DC,
+                127,
+                8,
+                21,
+                32,
+                "\x7f",
+                "\b",
+                "\x15",
+                " ",
+            ) or self._printable_character(key) is not None
         if name in self.choices:
             return self._choice_key(key, name)
 

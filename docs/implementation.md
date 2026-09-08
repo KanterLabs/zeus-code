@@ -27,7 +27,14 @@ machine and renders locally cached state immediately.
   `approvals`, `last_seq`, `next_offset`. Pages are limited to about 512 KiB;
   the standard client transparently assembles them while retaining the first
   page's event sequence for subsequent replay.
-- `providers` → `{codex: {available, detail, version?, models?}, opencode: ...}`.
+- `providers` → cached `{codex: {available, detail, version?, models?, status?,
+  checked_at?, cached?, refreshing?}, opencode: ...}`. Capability discovery runs
+  in the background so provider checks do not block event replay or cancellation.
+  Model entries include `id`, `name`, and provider-reported optional
+  `reasoning_efforts`, `variants`, `is_default`, `default_reasoning_effort`.
+  Missing capability fields are unavailable, not guessed defaults.
+- `refresh_providers` requests background capability refresh without waiting for
+  provider subprocesses.
 - `add_project {path, name?}` → project `{id, name, path, branch, ...}`.
 - `create_thread {project_id, title, provider, model?, settings?, worktree?: bool}`
   → thread `{id, project_id, title, provider, cwd, branch, isolated, session_id,
@@ -70,3 +77,22 @@ Detailed evidence and the outstanding live two-host gate are in [validation.md](
 
 No existing production database is being migrated or deployed by this task.
 Populated-database reopening/migration and backup integrity are release checks.
+
+### Automatic agents and local attention
+
+Provider tool events may carry `data.agents` snapshots, with a stable child `id`,
+optional `parent_id`, `label`, `state`, public `result`, and provider-reported
+`model` or lifecycle times. These are persisted through the existing event
+journal. The client merges bounded snapshots by agent ID and sequence, including
+resumed children. Private reasoning is not rendered as a result.
+
+Read markers are additive client-cache data, scoped by machine, server identity,
+thread and event sequence. A result becomes read only when its selected
+conversation is visibly at the live tail. Overlays and history browsing do not
+advance the marker. Pending approvals remain actionable independently of unread
+counts. No database migration is required.
+
+Release metadata includes `protocol_version` alongside `schema_version`.
+Compatible updates switch a managed launcher to a new immutable runtime while
+retaining running-daemon archives and the previous executable. Legacy archives
+in use are retained until a later explicit update can replace their entrypoint.

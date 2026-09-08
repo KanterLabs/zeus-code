@@ -37,6 +37,7 @@ jobs:
           python scripts/build.py
           python dist/zeus-code.pyz --version
           python scripts/smoke.py --executable dist/zeus-code.pyz
+          python scripts/e2e-ux.py --executable dist/zeus-code.pyz
 
   npm-test:
     runs-on: homelab

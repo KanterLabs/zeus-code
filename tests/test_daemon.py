@@ -35,11 +35,76 @@ class ControlledProvider:
                 await context.emit("message_delta", {"item_id": "answer", "text": self.decision})
             elif prompt == "oversized-approval":
                 await context.approve({"provider_request_id": "huge", "details": "x" * 40000})
+            elif prompt == "agents":
+                await context.emit("tool", {
+                    "item_id": "spawn-a", "tool_type": "collabAgentToolCall",
+                    "title": "spawnAgent", "status": "completed",
+                    "agents": [{
+                        "id": "agent-a",
+                        "parent_id": context.session_id or "session-" + context.thread_id,
+                        "label": "Inspect parser", "state": "running",
+                        "model": "gpt-test", "started_at": 1000,
+                    }],
+                })
+                await context.emit("tool", {
+                    "item_id": "spawn-b", "tool_type": "collabAgentToolCall",
+                    "title": "spawnAgent", "status": "completed",
+                    "agents": [{
+                        "id": "agent-b", "parent_id": "agent-a",
+                        "label": "Nested validation", "state": "running",
+                        "model": "gpt-test-small", "started_at": 1100,
+                    }],
+                })
+                await context.emit("tool", {
+                    "item_id": "wait-agents", "tool_type": "collabAgentToolCall",
+                    "title": "wait", "status": "completed",
+                    "agents": [
+                        {
+                            "id": "agent-a", "state": "completed",
+                            "result": "Parser verified", "finished_at": 2000,
+                        },
+                        {
+                            "id": "agent-b", "state": "completed",
+                            "result": "Nested fixture verified", "finished_at": 2000,
+                        },
+                    ],
+                })
             else:
                 await self.release.wait()
             await context.emit("message_delta", {"item_id": "answer", "text": "Finished."})
         except asyncio.CancelledError:
             self.cancelled = True
+            raise
+
+
+class GatedDiscoveryProvider(ControlledProvider):
+    check_started: asyncio.Event
+    check_gate: asyncio.Event
+    checks = 0
+
+    async def check(self):
+        type(self).checks += 1
+        type(self).check_started.set()
+        await type(self).check_gate.wait()
+        return {
+            "available": True,
+            "detail": "Gated deterministic provider",
+            "models": [{"id": "gpt-test", "name": "Test"}],
+        }
+
+
+class SlowCancellationDiscoveryProvider(ControlledProvider):
+    check_started: asyncio.Event
+    cancellation_started: asyncio.Event
+    cancellation_gate: asyncio.Event
+
+    async def check(self):
+        type(self).check_started.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            type(self).cancellation_started.set()
+            await type(self).cancellation_gate.wait()
             raise
 
 
@@ -123,6 +188,150 @@ class DaemonTests(unittest.IsolatedAsyncioTestCase):
         await self.wait_for(lambda: self.daemon.store.run(run_id)["state"] == "completed")
         second[1].close()
         await second[1].wait_closed()
+
+    async def test_agent_snapshots_survive_restart_without_replay_duplicates(self):
+        thread = await self.thread()
+        run = await self.send(thread, "agents", "agent-turn")
+        await self.wait_for(lambda: self.daemon.store.run(run["id"])["state"] == "completed")
+        before = (
+            await self.daemon.dispatch(
+                "events", {"after": 0, "limit": 500, "thread_id": thread["id"]}
+            )
+        )["events"]
+        agent_events = [
+            event
+            for event in before
+            if event["kind"] == "tool"
+            and event["data"].get("tool_type") == "collabAgentToolCall"
+        ]
+        self.assertEqual(len(agent_events), 3)
+        self.assertEqual(
+            agent_events[1]["data"]["agents"][0]["parent_id"], "agent-a"
+        )
+
+        await self.daemon.close()
+        self.daemon = Daemon(
+            self.root / "state", providers={"codex": ControlledProvider}
+        )
+        await self.daemon.start()
+        after = (
+            await self.daemon.dispatch(
+                "events", {"after": 0, "limit": 500, "thread_id": thread["id"]}
+            )
+        )["events"]
+        self.assertEqual(
+            [
+                event
+                for event in after
+                if event["kind"] == "tool"
+                and event["data"].get("tool_type") == "collabAgentToolCall"
+            ],
+            agent_events,
+        )
+        self.assertEqual(len({event["seq"] for event in after}), len(after))
+
+    async def test_provider_discovery_is_background_cached_and_coalesced(self):
+        await self.daemon.close()
+        GatedDiscoveryProvider.check_started = asyncio.Event()
+        GatedDiscoveryProvider.check_gate = asyncio.Event()
+        GatedDiscoveryProvider.checks = 0
+        self.daemon = Daemon(
+            self.root / "state",
+            providers={
+                "codex": GatedDiscoveryProvider,
+                "opencode": ControlledProvider,
+            },
+        )
+        await self.daemon.start()
+
+        initial = await asyncio.wait_for(
+            self.daemon.dispatch("providers", {}), timeout=0.25
+        )
+        self.assertEqual(initial["codex"]["status"], "checking")
+        self.assertFalse(initial["codex"]["cached"])
+        self.assertTrue(initial["codex"]["refreshing"])
+        self.assertIsNone(initial["codex"]["checked_at"])
+        await asyncio.wait_for(GatedDiscoveryProvider.check_started.wait(), 0.25)
+
+        for _ in range(100):
+            status = await self.daemon.dispatch("providers", {})
+            if status["opencode"]["status"] == "ready":
+                break
+            await asyncio.sleep(0.005)
+        else:
+            self.fail("Fast provider discovery was blocked by its slow peer")
+
+        thread = await self.thread("opencode", "Responsive cancellation")
+        run = await self.send(thread, "hold", "responsive-turn")
+        await self.wait_for(lambda: thread["id"] in ControlledProvider.instances)
+        pair = await self.wire()
+        providers = await asyncio.wait_for(self.rpc(pair, "providers"), 0.25)
+        self.assertIn("result", providers)
+        events = await asyncio.wait_for(
+            self.rpc(pair, "events", {"after": 0, "limit": 500}), 0.25
+        )
+        self.assertIn("result", events)
+        cancelled = await asyncio.wait_for(
+            self.rpc(pair, "cancel", {"thread_id": thread["id"], "run_id": run["id"]}),
+            0.25,
+        )
+        self.assertTrue(cancelled["result"]["cancelled"])
+        self.assertFalse(GatedDiscoveryProvider.check_gate.is_set())
+
+        GatedDiscoveryProvider.check_gate.set()
+        for _ in range(100):
+            status = await self.daemon.dispatch("providers", {})
+            if status["codex"]["status"] == "ready" and not status["codex"]["refreshing"]:
+                break
+            await asyncio.sleep(0.005)
+        else:
+            self.fail("Gated provider discovery did not publish its result")
+        self.assertFalse(status["codex"]["cached"])
+        self.assertIsInstance(status["codex"]["checked_at"], str)
+
+        checks = GatedDiscoveryProvider.checks
+        await self.daemon.dispatch("providers", {})
+        await self.daemon.dispatch("providers", {})
+        await asyncio.sleep(0)
+        self.assertEqual(GatedDiscoveryProvider.checks, checks)
+
+        GatedDiscoveryProvider.check_started = asyncio.Event()
+        GatedDiscoveryProvider.check_gate = asyncio.Event()
+        refreshing = await self.daemon.dispatch("refresh_providers", {})
+        self.assertTrue(refreshing["codex"]["cached"])
+        self.assertTrue(refreshing["codex"]["refreshing"])
+        await asyncio.wait_for(GatedDiscoveryProvider.check_started.wait(), 0.25)
+        await self.daemon.dispatch("refresh_providers", {})
+        await asyncio.sleep(0)
+        self.assertEqual(GatedDiscoveryProvider.checks, checks + 1)
+        GatedDiscoveryProvider.check_gate.set()
+        pair[1].close()
+        await pair[1].wait_closed()
+
+    async def test_socket_remains_until_shutdown_releases_owner_lock(self):
+        await self.daemon.close()
+        SlowCancellationDiscoveryProvider.check_started = asyncio.Event()
+        SlowCancellationDiscoveryProvider.cancellation_started = asyncio.Event()
+        SlowCancellationDiscoveryProvider.cancellation_gate = asyncio.Event()
+        self.daemon = Daemon(
+            self.root / "state",
+            providers={"codex": SlowCancellationDiscoveryProvider},
+        )
+        await self.daemon.start()
+        await asyncio.wait_for(
+            SlowCancellationDiscoveryProvider.check_started.wait(), 0.25
+        )
+
+        close_task = asyncio.create_task(self.daemon.close())
+        await asyncio.wait_for(
+            SlowCancellationDiscoveryProvider.cancellation_started.wait(), 0.25
+        )
+        try:
+            self.assertTrue((self.root / "state/server.sock").is_socket())
+        finally:
+            SlowCancellationDiscoveryProvider.cancellation_gate.set()
+            await asyncio.wait_for(close_task, 0.25)
+        self.assertFalse((self.root / "state/server.sock").exists())
 
     async def test_immediate_cancel_before_provider_starts_is_terminal(self):
         thread = await self.thread()

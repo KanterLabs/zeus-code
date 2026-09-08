@@ -152,3 +152,18 @@ for the default `codex` command. Explicit executable paths are never replaced.
 This handles noninteractive SSH sessions that omit `~/.local/bin` without editing
 shell startup files. A known unavailable provider leaves the draft intact and
 reports setup failure before accepting a run.
+
+## v1.1 model and child-agent visibility
+
+Model discovery retains `supportedReasoningEfforts`, `defaultReasoningEffort`
+and `isDefault` from the installed app-server's `model/list` response. The client
+uses these capabilities for its searchable picker. An unset model remains
+**Provider default**; discovery does not establish the actual model of a run.
+
+`collabAgentToolCall` item notifications carry normalized `data.agents`
+snapshots. Receiver thread IDs and `agentsStates` keys establish child identity;
+a spawn's sender establishes its parent. Spawn prompts provide task labels and
+provider state messages provide public results. Unknown states remain visible.
+Observed lifecycle timestamps use epoch milliseconds. No private reasoning or
+synthetic resolved model is included. Tests cover concurrent children, nesting,
+completion, interruption and later reuse, with persisted replay after restart.
