@@ -20,7 +20,7 @@ function fixture(t) {
   const hash = integrity(path.join(root, 'dist', filename));
   const calls = [];
   const run = args => { calls.push(args); return JSON.stringify([{ ...pkg, filename, integrity: hash }]); };
-  return { root, env: { GITHUB_REF_NAME: 'v1.0.4', NODE_AUTH_TOKEN: 'test-only' }, run, calls, hash };
+  return { root, env: { GITHUB_REF_NAME: 'v1.0.4', GITHUB_ACTIONS: 'true', ACTIONS_ID_TOKEN_REQUEST_URL: 'https://example.invalid/oidc', ACTIONS_ID_TOKEN_REQUEST_TOKEN: 'test-only' }, run, calls, hash };
 }
 test('publishes once then verifies exact registry integrity', async t => {
   const f = fixture(t); let count = 0;
@@ -29,15 +29,16 @@ test('publishes once then verifies exact registry integrity', async t => {
   assert.ok(f.calls[2].includes('--ignore-scripts'));
 });
 test('matching registry bytes are idempotent without authentication', async t => {
-  const f = fixture(t); delete f.env.NODE_AUTH_TOKEN;
+  const f = fixture(t); delete f.env.ACTIONS_ID_TOKEN_REQUEST_TOKEN;
   assert.match(await publish({ ...f, lookup: async () => f.hash }), /already published/);
   assert.equal(f.calls.length, 2);
 });
-test('conflicting bytes and missing token prevent publication', async t => {
+test('conflicting bytes and missing OIDC identity prevent publication', async t => {
   const f = fixture(t);
   await assert.rejects(publish({ ...f, lookup: async () => 'different' }), /different bytes/);
-  delete f.env.NODE_AUTH_TOKEN;
-  await assert.rejects(publish({ ...f, lookup: async () => null }), /NPM_TOKEN/);
+  delete f.env.ACTIONS_ID_TOKEN_REQUEST_TOKEN;
+  f.env.NODE_AUTH_TOKEN = 'legacy-token-must-not-authorize-ci';
+  await assert.rejects(publish({ ...f, lookup: async () => null }), /GitHub Actions OIDC/);
   assert.ok(f.calls.every(args => args[0] !== 'publish'));
 });
 test('tag mismatch prevents packing and publishing', async t => {

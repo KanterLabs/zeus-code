@@ -13,7 +13,7 @@ prerequisite guidance. See the [update instructions](../README.md#update).
 **In progress for v1.0.5:** ZC-5 adds `@kanterlabs/zeus-code` packaging,
 GitHub-based npx startup from any directory, persistent runtime bundles and
 automatic npm publication alongside tagged GitHub releases. npm publication
-requires the repository publishing secret; packed-install and state-preservation
+uses OIDC after one-time package bootstrap and trust setup; packed-install and state-preservation
 checks are acceptance gates. See [npm publishing](npm-publishing.md).
 
 The next release, **v1.1**, focuses on daily usability: setup, navigation and a
