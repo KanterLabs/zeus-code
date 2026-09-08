@@ -209,3 +209,9 @@ Registry publication remains a separate release gate pending npm credentials.
 All 16 npm tests pass, including publication, exact-byte retry, conflicting-version
 refusal, tag mismatch and registry failures. A real registry lookup and pack with
 no publishing credential reaches the documented `NPM_TOKEN` handoff error.
+
+The v1.0.4 release gate caught npm 10 preparation output mixed into JSON metadata;
+neither registry nor GitHub release was published from that tag. v1.0.5 keeps
+build diagnostics on stderr and prepares before machine-readable packing. The
+full packed-install/state smoke and publisher credential handoff pass with
+npm 10.8.2 as well as the local npm 9 baseline.

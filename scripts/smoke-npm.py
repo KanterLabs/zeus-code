@@ -30,7 +30,8 @@ def main():
                 raise RuntimeError(f'{command[0]} failed: {result.stderr} {result.stdout}')
             return result.stdout
 
-        packed = json.loads(run(['npm', 'pack', '--json', '--pack-destination', str(base)], at=ROOT))[0]
+        run(['npm', 'run', 'prepare'], at=ROOT)
+        packed = json.loads(run(['npm', 'pack', '--ignore-scripts', '--json', '--pack-destination', str(base)], at=ROOT))[0]
         allowed = {'package.json', 'README.md', 'bin/zeus-code.cjs', 'dist/zeus-code.pyz',
                    'dist/release.json', 'dist/SHA256SUMS'}
         assert {item['path'] for item in packed['files']} == allowed, 'Unexpected npm package contents'

@@ -10,7 +10,7 @@ database backup. Its scope covers stopped-daemon, same-schema updates; daemon
 restart orchestration remains ZC-2. ZC-5 still covers broader installation and
 prerequisite guidance. See the [update instructions](../README.md#update).
 
-**In progress for v1.0.4:** ZC-5 adds `@kanterlabs/zeus-code` packaging,
+**In progress for v1.0.5:** ZC-5 adds `@kanterlabs/zeus-code` packaging,
 GitHub-based npx startup from any directory, persistent runtime bundles and
 automatic npm publication alongside tagged GitHub releases. npm publication
 requires the repository publishing secret; packed-install and state-preservation
