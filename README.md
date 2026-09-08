@@ -19,6 +19,30 @@ each machine where tasks will execute. Zeus uses those existing credentials.
 It has no third-party Python runtime dependencies, web dashboard, or database
 service to configure.
 
+With **Node.js 18+** installed, run from any directory without cloning:
+
+```sh
+npx github:KanterLabs/zeus-code
+```
+
+The launcher verifies the bundled application and starts the local daemon before
+opening the workspace. Python 3.11+ with curses is still required; set
+`ZEUS_CODE_PYTHON` to a Python executable if it is not named `python3` or `python`.
+Runtime bundles live outside npm's temporary cache, so clearing that cache does
+not interrupt the daemon. Existing conversations and settings are preserved.
+
+The npm package name is **`@kanterlabs/zeus-code`**. After its first npm release:
+
+```sh
+npx @kanterlabs/zeus-code@latest
+# Or install a persistent command:
+npm install -g @kanterlabs/zeus-code
+zeus-code
+```
+
+Use the scoped name: the unscoped `zeus-code` package belongs to another project.
+`npx install zeus-code` is not an npm installation command.
+
 From a checkout:
 
 ```sh
@@ -65,6 +89,12 @@ can be copied to another supported machine. Alternatively, install the package
 with `python3 -m pip install .` in your chosen Python environment.
 
 ## Update
+
+For npm installations, use `npm install -g @kanterlabs/zeus-code@latest`, or run
+`npx @kanterlabs/zeus-code@latest` each time. GitHub users can run
+`npx github:KanterLabs/zeus-code` again. The npm launcher uses its own bundled
+version. Running its `update` command installs a separate standalone command in
+`~/.local/bin`; it does not replace files inside the npm package or runtime cache.
 
 With v1.0.3 or newer installed:
 

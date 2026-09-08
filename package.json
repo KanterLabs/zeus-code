@@ -1,0 +1,15 @@
+{
+  "name": "@kanterlabs/zeus-code",
+  "version": "1.0.4",
+  "description": "Persistent terminal workspace for Codex and OpenCode across local and SSH machines",
+  "license": "UNLICENSED",
+  "repository": { "type": "git", "url": "git+https://github.com/KanterLabs/zeus-code.git" },
+  "bin": { "zeus-code": "bin/zeus-code.cjs" },
+  "engines": { "node": ">=18" },
+  "files": ["bin/zeus-code.cjs", "dist/zeus-code.pyz", "dist/release.json", "dist/SHA256SUMS"],
+  "scripts": {
+    "prepare": "node scripts/prepare-npm.cjs",
+    "test": "node --test tests/npm-*.test.cjs"
+  },
+  "publishConfig": { "access": "public", "registry": "https://registry.npmjs.org/" }
+}
