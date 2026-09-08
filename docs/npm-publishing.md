@@ -1,52 +1,74 @@
 # Publishing npm releases
 
-The npm package is `@kanterlabs/zeus-code`. Pushing a stable version tag such as
-`v1.0.4` runs the Python and npm checks, publishes the verified GitHub Release,
-then publishes the same application version to npm with public access.
-Ordinary pushes to `main` run checks without publishing a registry version.
+The package is `@kanterlabs/zeus-code`. Stable `v*` tags run Python and npm checks,
+create the verified GitHub Release, then publish through npm trusted publishing
+(OIDC). Ordinary main pushes only run checks. No `NPM_TOKEN` secret is used.
 
-## One-time authentication
+Tests and GitHub release creation run on `homelab`. The separate `npm-release`
+job uses `ubuntu-24.04` because npm does not support OIDC on self-hosted runners.
+This is the limited runner-policy compatibility exception. That job alone has
+`id-token: write`, uses Node 24/npm 11.19.1, and disables npm caching.
 
-All jobs use the organization's `homelab` runners. npm trusted publishing does
-not currently support self-hosted runners, so this workflow uses a granular
-access token. See [npm trusted publishing](https://docs.npmjs.com/trusted-publishers/).
+## First package publication
 
-1. In npm, open your profile's **Access Tokens**, then generate a granular token.
-2. Under **Packages and scopes**, select **Read and write** for `@kanterlabs`.
-   The scope permits creating the first package. Organization-management access
-   alone does not grant package publishing rights. After initial publication,
-   you can restrict a replacement token to this package.
-3. Enable **Bypass two-factor authentication** for unattended publishing and set
-   an expiration. Renew the token before it expires. Keep organization management
-   permissions disabled; this workflow does not need them.
-4. Add the token directly to this repository's **Settings → Secrets and variables
-   → Actions → New repository secret**, named **`NPM_TOKEN`**. Do not put it in a
-   commit, issue or chat.
-
-The detailed controls are documented by
-[npm](https://docs.npmjs.com/creating-and-viewing-access-tokens/).
-
-## Release and retry
-
-Update `package.json`, `pyproject.toml` and `src/zeus_code/__init__.py` to the same
-stable version, commit and push, then tag that commit:
+npm requires the package to exist before configuring its trusted publisher.
+This one-time bootstrap uses an interactive npm login and 2FA, not a bypass
+access token. Run on a machine with Git, Node and Python 3.11+ with curses:
 
 ```sh
-git tag v1.0.4
-git push origin v1.0.4
+bootstrap_dir=$(mktemp -d "$HOME/zeus-code-publish.XXXXXX") &&
+git clone --depth 1 --branch v1.0.6 https://github.com/KanterLabs/zeus-code.git "$bootstrap_dir" &&
+cd "$bootstrap_dir" &&
+npm run prepare &&
+npm login --auth-type=web &&
+npm publish --access public
 ```
 
-Use the new version for subsequent releases. The publisher refuses mismatched
-tags and versions. It packs a verified standalone bundle and checks the registry
-archive's SHA-512 integrity after publication. An existing version is skipped
-only when its archive bytes match; conflicting versions fail without overwrite.
+Complete npm's browser authentication/2FA prompts. This publishes the real
+v1.0.6 package. Do not publish a placeholder. If the package already exists,
+skip bootstrap and configure trust below. Keep the checkout until publication
+is verified; it does not affect Zeus conversations or daemon data.
 
-If authentication fails after the GitHub Release is created, configure or renew
-`NPM_TOKEN`, then choose **Re-run failed jobs** on that tag's Actions run. The
-GitHub publisher and npm publisher support this retry. Do not move an existing
-tag or reuse its version for changed files. Manual workflow dispatch on `main`
-only runs checks; retry the original tag run to publish.
+## Configure npm trust once
 
-Once published, users can run `npx @kanterlabs/zeus-code@latest` or install with
-`npm install -g @kanterlabs/zeus-code`. Until the first registry publication,
-`npx github:KanterLabs/zeus-code` works without npm publishing credentials.
+On npm, open `@kanterlabs/zeus-code` → Settings → Trusted publishing → GitHub Actions:
+
+| Field | Value |
+| --- | --- |
+| Organization or user | `KanterLabs` |
+| Repository | `zeus-code` |
+| Workflow filename | `ci.yml` |
+| Environment | Leave blank |
+| Allowed actions | Enable direct `npm publish` |
+
+The workflow filename is just `ci.yml`, not `.github/workflows/ci.yml`. Direct
+publish must be explicitly enabled; staged publishing alone is insufficient.
+
+With npm 11.15+ and interactive authentication, the equivalent is:
+
+```sh
+npm trust github @kanterlabs/zeus-code --repo=KanterLabs/zeus-code --file=ci.yml --allow-publish
+```
+
+After a successful OIDC release, revoke the unused automation token and remove
+its obsolete GitHub `NPM_TOKEN` secret. Package publishing access can disallow
+token publishing. Do not disable account 2FA.
+
+## Future releases and retries
+
+Update `package.json`, `pyproject.toml` and `src/zeus_code/__init__.py` to the same
+new stable version, commit and push, then push its matching `vX.Y.Z` tag.
+The first tag containing the OIDC workflow must be newer than v1.0.6; retrying
+old tags runs their original token-based workflow.
+
+The publisher verifies the registry archive's SHA-512 integrity. It skips an
+existing version only if the bytes match and refuses conflicting versions.
+If trust is missing or incorrect, fix the npm configuration and choose
+**Re-run failed jobs** on the new tag's Actions run. Never move an existing tag
+or reuse its version for changed package contents.
+
+Once published, users run `npx @kanterlabs/zeus-code@latest` or install using
+`npm install -g @kanterlabs/zeus-code`.
+
+Sources: [npm trusted publishing](https://docs.npmjs.com/trusted-publishers/),
+[npm trust prerequisites](https://docs.npmjs.com/cli/v11/commands/npm-trust/).

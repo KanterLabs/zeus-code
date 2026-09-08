@@ -12,9 +12,9 @@ function run(args, root = ROOT) {
     // Report only recognized codes/reasons, never raw npm output or credentials.
     const output = `${result.stderr || ''}\n${result.stdout || ''}`;
     const code = output.match(/(?:npm (?:ERR!|error) code )([A-Z][A-Z0-9_]+)/)?.[1];
-    let reason = 'check registry access and NPM_TOKEN permissions';
+    let reason = 'check npm trusted publisher settings, ci.yml and direct npm publish permission';
     if (/two.factor|bypass.?2fa|one.time pass/i.test(output)) {
-      reason = 'npm requires a token with Bypass 2FA enabled for unattended publishing';
+      reason = 'npm requires interactive authentication or a configured trusted publisher with npm publish allowed';
     } else if (/expired|revoked/i.test(output)) {
       reason = 'npm reports an expired or revoked token';
     } else if (/ENEEDAUTH|E401|EOTP/.test(output)) {
@@ -75,8 +75,8 @@ async function publish(options = {}) {
     if (existing !== expected) throw new Error('This npm version already exists with different bytes; refusing to overwrite');
     return `Verified ${pkg.name}@${pkg.version} is already published with identical bytes`;
   }
-  if (!env.NODE_AUTH_TOKEN?.trim()) {
-    throw new Error('Add a publishing token as the GitHub repository Actions secret NPM_TOKEN, then rerun this release job');
+  if (!(env.GITHUB_ACTIONS === 'true' && env.ACTIONS_ID_TOKEN_REQUEST_URL && env.ACTIONS_ID_TOKEN_REQUEST_TOKEN)) {
+    throw new Error('npm release requires GitHub Actions OIDC; grant this job id-token: write and configure the npm trusted publisher for KanterLabs/zeus-code, ci.yml');
   }
   execute(['publish', artifact, '--access', 'public', '--registry', REGISTRY, '--ignore-scripts'], root);
   const published = await lookup(pkg.name, pkg.version);
