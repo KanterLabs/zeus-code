@@ -143,3 +143,12 @@ summaries are bounded to keep them usable. An oversized or malformed message,
 premature process exit, timeout, unsupported request, or failed turn raises an
 actionable `ProviderError`. Complete conversation history and provider session
 IDs remain the daemon's persistence responsibility.
+
+## Executable discovery over SSH
+
+Readiness checks and runs use the same executable resolution: the configured
+executable on PATH first, then common user-local npm/Volta and Homebrew locations
+for the default `codex` command. Explicit executable paths are never replaced.
+This handles noninteractive SSH sessions that omit `~/.local/bin` without editing
+shell startup files. A known unavailable provider leaves the draft intact and
+reports setup failure before accepting a run.

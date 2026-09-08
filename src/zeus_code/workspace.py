@@ -904,6 +904,13 @@ class Workspace:
         prompt = view["draft"] if prompt is None else prompt
         if not prompt.strip():
             raise ValueError("Prompt is empty")
+        machine = self.machines[machine_id]
+        readiness = machine.get("providers", {}).get(thread.get("provider"), {})
+        if readiness.get("available") is False:
+            # A setup failure is definitive, not an accepted provider run.
+            # Keep the draft and avoid persisting a misleading failed turn.
+            detail = readiness.get("detail") or "Finish provider setup on this server."
+            raise ValueError(f"{thread.get('provider', 'Provider')} is unavailable on {machine.get('alias', machine_id)}: {detail}")
         request_id = request_id or uuid.uuid4().hex
         key = _view_key(machine_id, thread["id"])
         record = {"machine_id": machine_id, "thread_id": thread["id"], "prompt": prompt, "request_id": request_id}

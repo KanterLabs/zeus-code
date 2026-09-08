@@ -12,6 +12,7 @@ import json
 import os
 import shutil
 import signal
+from pathlib import Path
 from typing import Any
 
 from .. import __version__
@@ -26,6 +27,21 @@ _PENDING_BYTES_LIMIT = 4 * 1024 * 1024
 _PENDING_MESSAGE_LIMIT = 4096
 _REQUEST_TIMEOUT = 20.0
 _CLEANUP_TIMEOUT = 2.0
+
+
+def _codex_executable(executable: str) -> str | None:
+    """Resolve the same binary for readiness checks and actual runs over SSH."""
+    found = shutil.which(executable)
+    if found is not None or executable != "codex":
+        return found
+    # Noninteractive SSH commonly omits user-local npm installs and Homebrew.
+    # Explicit paths are never replaced with an unrelated installation.
+    for directory in (Path.home() / ".local/bin", Path.home() / ".npm-global/bin",
+                      Path.home() / ".volta/bin", Path("/opt/homebrew/bin"), Path("/usr/local/bin")):
+        found = shutil.which(str(directory / "codex"))
+        if found is not None:
+            return found
+    return None
 
 
 def _clip(value: str, limit: int = _EVENT_TEXT_LIMIT) -> str:
@@ -301,7 +317,7 @@ class CodexProvider:
         self.request_timeout = request_timeout
 
     def _connection(self) -> _AppServer:
-        return _AppServer(self.executable, self.line_limit)
+        return _AppServer(_codex_executable(self.executable) or self.executable, self.line_limit)
 
     async def run(self, context: RunContext, prompt: str) -> None:
         if not isinstance(prompt, str) or not prompt.strip():
@@ -765,7 +781,7 @@ class CodexProvider:
         await server.send({"id": request_id, "result": result})
 
     async def check(self) -> dict[str, Any]:
-        executable = shutil.which(self.executable)
+        executable = _codex_executable(self.executable)
         if executable is None:
             return {
                 "available": False,

@@ -198,6 +198,20 @@ class WorkspaceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(workspace.threads()[0]["state"], "running")
         await workspace.close()
 
+    async def test_unavailable_provider_preserves_draft_without_accepting_run(self):
+        rpc = FakeRPC()
+        workspace = self.make_workspace(rpc)
+        await workspace.sync_machine("local")
+        workspace.switch("local", "p1", "t1")
+        workspace.set_draft("keep this message")
+        workspace.selected_machine["providers"]["codex"] = {"available": False, "detail": "Run codex login on this server."}
+        with self.assertRaisesRegex(ValueError, "unavailable on local"):
+            await workspace.send_prompt()
+        self.assertEqual(workspace.thread_view()["draft"], "keep this message")
+        self.assertEqual(rpc.sent_prompts, [])
+        self.assertFalse(workspace.state["uncertain_sends"])
+        await workspace.close()
+
     async def test_uncertain_send_keeps_draft_and_explicit_retry_reuses_request_id(self):
         rpc = FakeRPC()
         workspace = self.make_workspace(rpc)
