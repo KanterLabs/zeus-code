@@ -7,6 +7,15 @@ walkthrough pass. With a minimal noninteractive SSH PATH, the built application
 finds the installed OpenCode 1.18.26 executable and discovers its 24 models.
 A symlink fixture verifies discovery and execution use the same resolved binary.
 
+The v1.1.1 tag passed Python 3.11/3.14 and npm package checks; GitHub published
+all three assets. Downloaded checksums and bytes match the tested build. A managed
+v1.1.0 launcher successfully ran `zeus-code update` against the public release,
+reported v1.1.1 and retained its previous runtime. The idle dev daemon was then
+upgraded with a verified SQLite backup and an unchanged full database fingerprint:
+97 projects, 3 threads, 5 runs and 333 events. Both Codex (6 models) and OpenCode
+(24 models) are available over SSH. npm publication still fails at the trusted
+publishing step; this release is available through GitHub.
+
 Process fixtures retain their bounded termination and stopped-write checks while
 recognizing killed Linux zombies as terminated. The eight process tests pass in
 Python 3.11 containers both with and without an init process. No supervisor
