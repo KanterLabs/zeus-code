@@ -25,6 +25,12 @@ With **Node.js 18+** installed, run from any directory without cloning:
 npx github:KanterLabs/zeus-code
 ```
 
+If an older npm installation fails while preparing the GitHub package, use:
+
+```sh
+npm exec --yes --package=github:KanterLabs/zeus-code -- zeus-code
+```
+
 The launcher verifies the bundled application and starts the local daemon before
 opening the workspace. Python 3.11+ with curses is still required; set
 `ZEUS_CODE_PYTHON` to a Python executable if it is not named `python3` or `python`.

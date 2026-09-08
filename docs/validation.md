@@ -215,3 +215,14 @@ neither registry nor GitHub release was published from that tag. v1.0.5 keeps
 build diagnostics on stderr and prepares before machine-readable packing. The
 full packed-install/state smoke and publisher credential handoff pass with
 npm 10.8.2 as well as the local npm 9 baseline.
+
+v1.0.5 at `f199235` passed all main and tagged test jobs. GitHub Release v1.0.5
+published its three verified assets; the npm step in run `34248494657` stopped
+with the explicit missing `NPM_TOKEN` error. npm remains unpublished until that
+secret is configured and the failed job is rerun.
+
+Fresh-cache GitHub installation reports v1.0.5 with npm 10.8.2 `npx` and npm 9
+`npm exec --yes --package=github:KanterLabs/zeus-code -- zeus-code --version`.
+This machine's npm 9 `npx` misroutes Git preparation to `npm exec install` on a
+fresh cache; the README gives the working `npm exec` fallback. Cached npm 9 npx
+success alone does not establish fresh-install compatibility.
