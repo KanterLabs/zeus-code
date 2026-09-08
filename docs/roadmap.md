@@ -1,25 +1,70 @@
 # Zeus Code roadmap
 
-Updated September 8, 2026. Baseline: **v1.0.2**. Tracking: Helm project **ZC**;
-planning task **ZC-1**. Version targets describe release scope; dates will follow
-implementation and acceptance evidence.
+Updated September 8, 2026. Released baseline: **v1.0.9**. Tracking: Helm
+project **ZC**; this UX sequence is recorded in **ZC-22**. Future implementation
+cards remain unclaimed in Backlog. Order below takes priority over the older
+milestone labels farther down this document.
 
-**Pulled forward for v1.0.3:** ZC-16 adds a simple latest-release self-update
-command with verified downloads, previous-binary retention and a pre-update
-database backup. Its scope covers stopped-daemon, same-schema updates; daemon
-restart orchestration remains ZC-2. ZC-5 still covers broader installation and
-prerequisite guidance. See the [update instructions](../README.md#update).
+## Next UX series
 
-**In progress for v1.0.5:** ZC-5 adds `@kanterlabs/zeus-code` packaging,
-GitHub-based npx startup from any directory, persistent runtime bundles and
-automatic npm publication alongside tagged GitHub releases. npm publication
-uses OIDC after one-time package bootstrap and trust setup; packed-install and state-preservation
-checks are acceptance gates. See [npm publishing](npm-publishing.md).
+The first delivery is **model visibility and selection**. Each later delivery
+adds one clear capability while keeping the normal conversation view compact.
 
-The next release, **v1.1**, focuses on daily usability: setup, navigation and a
-polished terminal UI. A user should be able to install Zeus, launch it from any
-directory, choose a repository, start a conversation and understand what is
-happening throughout a run.
+| Order | Delivery | Cards | User-visible acceptance |
+| --- | --- | --- | --- |
+| 1 | Model indicator and searchable selector | ZC-23, ZC-13; capability prerequisite ZC-6 | A compact control beside the composer shows provider, configured model and supported reasoning setting. Click or F4 opens search across discovered models, including Provider default. |
+| 2 | Automatic subagent activity | ZC-24 → ZC-25 | An expandable summary shows running/completed counts. Expand for each agent's task, state, elapsed time and result without leaving the parent conversation. |
+| 3 | Readable work and results | ZC-10 | Tool output stays collapsed by default; the current action, failures and final answer are easy to distinguish. Raw event noise does not dominate the transcript. |
+| 4 | Results that need attention | ZC-12 | Unread completions, failures and approval requests remain visible when working in another thread; reviewing them preserves the current draft. |
+| 5 | Fewer commands and setup surprises | ZC-9, ZC-26 | A searchable command palette names its target. A compatible client update works while daemon work continues, with clear handling of deferred server upgrades. |
+
+### Model controls
+
+- Show the configured model on every selected conversation, including narrow
+  terminal layouts. Label an unresolved provider choice **Provider default**;
+  do not display a guessed actual model.
+- Search the full discovered list instead of typing an undocumented identifier
+  or squeezing five model names into a form title.
+- Label cached/unavailable discovery. Only offer reasoning, agent or variant
+  settings supported by that provider and model.
+- Preserve explicit permissions and per-thread settings. Explain whether a
+  change applies to the next message; never relabel an already-running request
+  as if its model had changed.
+
+### Automatic subagents first
+
+Shane selected visibility into agents the provider launches automatically.
+Manual worker launch and agent orchestration are outside this first delivery.
+
+- Normalize provider-reported identities, parent relationships and lifecycle
+  events before building the panel. Do not invent unsupported statuses or model
+  information. Replay must deduplicate agent updates after SSH reconnect.
+- Keep the panel collapsed unless opened. Show public task/result details;
+  do not expose private reasoning. Selecting an agent must preserve parent
+  draft, scroll and execution.
+- Validate two concurrent agents, nested agents, completion, failure and stale
+  connections with fixtures before any optional isolated live-provider test.
+
+### Delivery gates
+
+Each slice needs keyboard and narrow-terminal checks, preserved drafts and
+populated state, and a real terminal walkthrough of its primary interaction.
+Provider integration changes require contract fixtures first. Do not call a
+feature complete merely because a button renders or a server connects.
+
+## Recent delivery status
+
+- **v1.0.3 / ZC-16:** verified GitHub self-update, previous-binary retention and
+  database backup. Running-daemon refusal remains; ZC-26 addresses safe client
+  updates separately from server restart orchestration (ZC-2).
+- **ZC-5:** npm package exists, but automatic npm publication remains blocked by
+  trusted-publisher configuration. GitHub Releases distribute current builds.
+- **v1.0.8 / ZC-20:** guided SSH server setup and remote project discovery.
+- **v1.0.9 / ZC-21:** Codex discovery outside noninteractive SSH PATH, compact
+  sidebar, searchable project picker, and draft-preserving provider failures.
+
+The broader **v1.1** theme remains daily usability: install, open a project,
+start a conversation and understand what is happening throughout a run.
 
 ## What already works
 
