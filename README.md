@@ -64,6 +64,49 @@ Ensure `~/.local/bin` is in your `PATH`. The built file requires only Python; it
 can be copied to another supported machine. Alternatively, install the package
 with `python3 -m pip install .` in your chosen Python environment.
 
+## Update
+
+With v1.0.3 or newer installed:
+
+```sh
+zeus-code update
+```
+
+This installs the latest stable GitHub release after verifying its checksums
+and version metadata. An installed standalone bundle updates in place. From a
+source checkout or Python package installation, it installs the standalone
+command into `~/.local/bin`; the checkout remains available for development.
+Use `--install-dir DIR` to choose another directory, or `zeus-code update --check`
+to check availability without changing files.
+
+Stop the local daemon before installing an update. The updater refuses to
+replace the application while the daemon is running. Choose when to stop active
+work, then run:
+
+```sh
+zeus-code stop
+zeus-code update
+zeus-code serve --background
+```
+
+The previous executable is retained, and an existing Zeus database gets an
+integrity-checked SQLite backup before replacement. The updater accepts releases
+with the same database schema so the retained binary remains compatible. It
+never resets or restores user data. Run the command separately on each machine;
+`--host` is not supported for updates.
+
+To get this command from an older source checkout, run these commands **inside
+that checkout** once:
+
+```sh
+git pull --ff-only
+./zeus-code update --install-dir "$HOME/.local/bin"
+```
+
+Ensure `~/.local/bin` is in your `PATH`, then use `zeus-code update` for future
+releases. Tagged releases publish `zeus-code.pyz`, `release.json` and
+`SHA256SUMS` after CI passes.
+
 ## Remote work
 
 Install Zeus Code and an authenticated provider on each remote development

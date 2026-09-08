@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "zeus-code"
-version = "1.0.2"
+version = "1.0.3"
 description = "A persistent terminal workspace for Codex and OpenCode across local and SSH machines"
 readme = "README.md"
 requires-python = ">=3.11"
