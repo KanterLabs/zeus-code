@@ -29,6 +29,12 @@ def _parser() -> argparse.ArgumentParser:
     serve_parser.add_argument("--background", action="store_true", help="detach and write output to the state log")
     connect_parser = commands.add_parser("connect", help="open the TUI, initially connected to an SSH host")
     connect_parser.add_argument("ssh_alias", nargs="?")
+    connect_parser.add_argument("--projects", metavar="REMOTE_FOLDER", help="set up the SSH server and import this remote projects folder before opening")
+    remote = commands.add_parser("remote", help="connect a dev server").add_subparsers(dest="remote_command", required=True)
+    remote_add = remote.add_parser("add", help="install/start Zeus over SSH and import remote repositories")
+    remote_add.add_argument("ssh_alias")
+    remote_add.add_argument("--projects", default="~/projects", metavar="REMOTE_FOLDER")
+    remote_add.add_argument("--name", default="", help="display name for the server")
     commands.add_parser("status", help="show daemon status")
     commands.add_parser("stop", help="gracefully stop the daemon")
     commands.add_parser("bridge", help="relay SSH transport (internal)")
@@ -116,8 +122,18 @@ def _print_result(result: Any) -> None:
     print(json.dumps(result, indent=2, sort_keys=True, ensure_ascii=False, default=str))
 
 
+def _configured_client(args: argparse.Namespace) -> RPCClient:
+    if args.host:
+        from .workspace import CacheStore
+
+        machine = next((m for m in CacheStore().load()["machines"].values() if m.get("host") == args.host or m.get("alias") == args.host), None)
+        if machine and machine.get("remote_command"):
+            return RPCClient(args.data_dir, host=machine["host"], remote_command=machine["remote_command"])
+    return RPCClient(args.data_dir, host=args.host)
+
+
 async def _rpc(args: argparse.Namespace, method: str, params: dict[str, Any] | None = None) -> Any:
-    async with RPCClient(args.data_dir, host=args.host) as client:
+    async with _configured_client(args) as client:
         return await client.call(method, params)
 
 
@@ -182,6 +198,21 @@ async def _background_serve(data_dir: Path) -> int:
 
 async def _run_async(args: argparse.Namespace) -> int:
     command = args.command
+    if command == "remote":
+        if args.host:
+            raise ValueError("Use remote add SSH_ALIAS, without --host")
+        from .workspace import Workspace
+
+        workspace = Workspace(data_dir=args.data_dir)
+        try:
+            result = await workspace.connect_remote(args.ssh_alias, args.projects, alias=args.name,
+                on_progress=lambda message: print(message, file=sys.stderr, flush=True))
+            print(json.dumps({"server": result["machine"]["alias"], "projects": result["projects"],
+                              "imported": result["imported"], "warnings": result["warnings"],
+                              "truncated": result["truncated"]}, indent=2))
+        finally:
+            await workspace.close()
+        return 0
     if command == "update":
         if args.host:
             raise ValueError("update is local-only; run it on the machine you want to update")
@@ -207,7 +238,7 @@ async def _run_async(args: argparse.Namespace) -> int:
     elif command == "stop":
         result = await _rpc(args, "stop")
     elif command == "doctor":
-        async with RPCClient(args.data_dir, host=args.host) as client:
+        async with _configured_client(args) as client:
             result = {"server": client.hello, "providers": await client.call("providers")}
     elif command == "project" and args.project_command == "add":
         project_path = str(args.path) if args.host is not None else str(args.path.expanduser().resolve())
@@ -281,6 +312,21 @@ def main(argv: Sequence[str] | None = None) -> int:
                     parser.error("connect SSH_ALIAS conflicts with --host")
                 initial_host = args.ssh_alias
             from .tui import run_tui
+
+            if args.command == "connect" and args.projects is not None:
+                if not initial_host:
+                    parser.error("connect --projects requires an SSH destination")
+                from .workspace import Workspace
+
+                async def setup_remote() -> None:
+                    workspace = Workspace(data_dir=args.data_dir)
+                    try:
+                        await workspace.connect_remote(initial_host, args.projects,
+                            on_progress=lambda message: print(message, file=sys.stderr, flush=True))
+                    finally:
+                        await workspace.close()
+
+                asyncio.run(setup_remote())
 
             result = run_tui(data_dir=args.data_dir, initial_host=initial_host)
             return int(result or 0)
