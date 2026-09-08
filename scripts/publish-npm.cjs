@@ -9,8 +9,18 @@ const REGISTRY = 'https://registry.npmjs.org/';
 function run(args, root = ROOT) {
   const result = spawnSync('npm', args, { cwd: root, encoding: 'utf8', timeout: 120000 });
   if (result.error || result.status !== 0) {
-    // npm diagnostics can contain authentication context. Keep CI output bounded.
-    throw new Error(`npm ${args[0]} failed; check registry access and NPM_TOKEN permissions`);
+    // Report only recognized codes/reasons, never raw npm output or credentials.
+    const output = `${result.stderr || ''}\n${result.stdout || ''}`;
+    const code = output.match(/(?:npm (?:ERR!|error) code )([A-Z][A-Z0-9_]+)/)?.[1];
+    let reason = 'check registry access and NPM_TOKEN permissions';
+    if (/two.factor|bypass.?2fa|one.time pass/i.test(output)) {
+      reason = 'npm requires a token with Bypass 2FA enabled for unattended publishing';
+    } else if (/expired|revoked/i.test(output)) {
+      reason = 'npm reports an expired or revoked token';
+    } else if (/ENEEDAUTH|E401|EOTP/.test(output)) {
+      reason = 'npm did not accept the publishing credentials';
+    }
+    throw new Error(`npm ${args[0]} failed${code ? ` (${code})` : ''}; ${reason}`);
   }
   return result.stdout;
 }

@@ -1,6 +1,6 @@
 {
   "name": "@kanterlabs/zeus-code",
-  "version": "1.0.5",
+  "version": "1.0.6",
   "description": "Persistent terminal workspace for Codex and OpenCode across local and SSH machines",
   "license": "UNLICENSED",
   "repository": { "type": "git", "url": "git+https://github.com/KanterLabs/zeus-code.git" },
