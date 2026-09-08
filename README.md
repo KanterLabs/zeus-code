@@ -8,6 +8,9 @@ Start a task, switch projects, and come back to its conversation, unsent draft,
 view position, and progress. Agents run in a persistent daemon on their machine;
 closing the terminal client does not cancel them.
 
+The [roadmap](docs/roadmap.md) prioritizes easier setup, reliable navigation and a
+polished terminal UI for v1.1, followed by workspace and remote improvements.
+
 ## Start
 
 Requires **Python 3.11+**, Git, and a terminal with curses support on Linux or
