@@ -18,7 +18,7 @@ import uuid
 from . import PROTOCOL_VERSION, __version__
 from .paths import default_data_dir, secure_directory, socket_path
 from .providers.base import ProviderError, RunContext
-from .repository import create_worktree, get_diff, inspect_repository
+from .repository import create_worktree, discover_projects, get_diff, inspect_repository
 from .storage import Store
 
 MAX_LINE = 1024 * 1024
@@ -202,6 +202,8 @@ class Daemon:
             return result
         if method == "providers":
             return await self._check_providers()
+        if method == "discover_projects":
+            return await discover_projects(_string(params, "root"))
         if method == "add_project":
             repo = await inspect_repository(_string(params, "path"))
             name = _string(params, "name", maximum=120, optional=True) or Path(repo["path"]).name

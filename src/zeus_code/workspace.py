@@ -180,10 +180,10 @@ class Workspace:
         self._wake = asyncio.Event()
 
     @staticmethod
-    def _default_rpc_factory(*, data_dir: Path | None, host: str | None) -> Any:
+    def _default_rpc_factory(*, data_dir: Path | None, host: str | None, remote_command: str = "zeus-code") -> Any:
         from .client import RPCClient
 
-        return RPCClient(data_dir=data_dir, host=host, remote_command="zeus-code")
+        return RPCClient(data_dir=data_dir, host=host, remote_command=remote_command)
 
     @property
     def machines(self) -> dict[str, dict[str, Any]]:
@@ -238,6 +238,66 @@ class Workspace:
             if machine.get("host") == host:
                 return machine_id
         return self.add_machine(host, host)["id"]
+
+    async def connect_remote(self, host: str, projects_root: str = "~/projects", *,
+                             alias: str = "", on_progress: Callable[[str], None] | None = None) -> dict[str, Any]:
+        """Explicit onboarding: provision a server, import repositories and save it."""
+        from .client import _validate_host
+        from .remote import provision_remote
+
+        host = _validate_host(host.strip())
+        alias = alias.strip() or host
+        existing = next((m for m in self.machines.values() if m.get("host") == host), None)
+        if alias == "local" or any(m.get("alias") == alias and m is not existing for m in self.machines.values()):
+            raise ValueError(f"Machine name already exists: {alias}")
+        if not projects_root.strip():
+            raise ValueError("Enter a projects folder on the remote server, such as ~/projects")
+        progress = on_progress or (lambda _: None)
+        installed = await provision_remote(host, on_progress=progress)
+        client = self.rpc_factory(data_dir=None, host=host, remote_command=installed["remote_command"])
+        if inspect.isawaitable(client):
+            client = await client
+        warnings: list[str] = []
+        imported = 0
+        try:
+            await client.connect()
+            progress("Finding repositories on the server…")
+            snapshot = await client.call("snapshot")
+            try:
+                found = await client.call("discover_projects", {"root": projects_root.strip()})
+            except RPCError as exc:
+                if exc.code in {-32601, "unknown_method"}:
+                    raise RuntimeError("The running server is older. Finish its active work, stop it using its original installation on the server, then connect again.") from exc
+                raise
+            known = {p["path"] for p in snapshot.get("projects", [])}
+            for index, project in enumerate(found["projects"]):
+                progress(f"Importing repositories {index + 1}/{len(found['projects'])}…")
+                if project["path"] in known:
+                    continue
+                try:
+                    await client.call("add_project", {"path": project["path"], "name": project["name"]})
+                    imported += 1
+                except RPCError as exc:
+                    warnings.append(f"{project['name']}: {exc.message}")
+        finally:
+            await client.close()
+        machine = existing or self.add_machine(alias, host)
+        machine_id = machine["id"]
+        polling = self.poll_tasks.pop(machine_id, None)
+        if polling is not None:
+            polling.cancel()
+            await asyncio.gather(polling, return_exceptions=True)
+        await self._drop_client(machine_id)
+        machine.update(alias=alias, remote_command=installed["remote_command"], projects_root=found["root"])
+        self._changed(force=True)
+        progress("Loading remote workspace…")
+        await self.sync_machine(machine_id)
+        if machine.get("connection") != "connected":
+            raise ConnectionError(machine.get("last_error") or "Server did not connect")
+        self.switch(machine_id)
+        self._changed(force=True)
+        return {"machine": machine, "imported": imported, "projects": len(self.projects(machine_id)),
+                "warnings": warnings, "truncated": found.get("truncated", False)}
 
     def projects(self, machine_id: str | None = None) -> list[dict[str, Any]]:
         machine = self.machines[machine_id or self.selected_machine_id]
@@ -387,6 +447,8 @@ class Workspace:
     async def _make_client(self, machine_id: str) -> Any:
         machine = self.machines[machine_id]
         kwargs = {"data_dir": self.data_dir if machine.get("host") is None else None, "host": machine.get("host")}
+        if machine.get("remote_command"):
+            kwargs["remote_command"] = machine["remote_command"]
         client = self.rpc_factory(**kwargs)
         if inspect.isawaitable(client):
             client = await client

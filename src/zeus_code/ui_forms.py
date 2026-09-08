@@ -34,6 +34,7 @@ class Form:
     hints: dict[str, str] = field(default_factory=dict)
     error: str = ""
     busy: bool = False
+    progress: str = ""
     _cursors: list[int] = field(init=False, repr=False)
     _replace_defaults: list[bool] = field(init=False, repr=False)
 

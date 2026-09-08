@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections import deque
 import os
 from pathlib import Path
 import selectors
@@ -20,9 +21,112 @@ _GIT_TIMEOUT = 20.0
 _UNTRACKED_STATS_LIMIT = 32 * 1024 * 1024
 _UNTRACKED_STATS_TIMEOUT = 1.0
 
+DISCOVERY_MAX_DEPTH = 4
+DISCOVERY_MAX_DIRECTORIES = 2000
+DISCOVERY_MAX_PROJECTS = 200
+_DISCOVERY_SKIPPED_DIRECTORIES = {
+    ".git",
+    ".hg",
+    ".svn",
+    "__pycache__",
+    "build",
+    "dist",
+    "node_modules",
+    "target",
+    "vendor",
+    "venv",
+}
+
 
 class RepositoryError(RuntimeError):
     """A repository operation failed in a way that is safe to show to a user."""
+
+
+def _discovery_root(path: str) -> Path:
+    if not isinstance(path, str) or not path.strip() or "\0" in path:
+        raise ValueError("discovery root must be a non-empty path")
+    try:
+        expanded = Path(path).expanduser()
+    except (OSError, RuntimeError) as exc:
+        raise RepositoryError(f"Could not expand project discovery root {path!r}: {exc}") from exc
+    try:
+        root = expanded.resolve(strict=True)
+    except FileNotFoundError:
+        raise RepositoryError(f"Project discovery root does not exist: {expanded}") from None
+    except (OSError, RuntimeError) as exc:
+        raise RepositoryError(f"Cannot access project discovery root {expanded}: {exc}") from exc
+    try:
+        mode = root.stat().st_mode
+    except OSError as exc:
+        raise RepositoryError(f"Cannot access project discovery root {root}: {exc}") from exc
+    if not stat.S_ISDIR(mode):
+        raise RepositoryError(f"Project discovery root is not a directory: {root}")
+    return root
+
+
+def _discover_projects(path: str) -> dict[str, object]:
+    root = _discovery_root(path)
+    pending: deque[tuple[Path, int]] = deque([(root, 0)])
+    projects: list[dict[str, str]] = []
+    visited = 0
+    truncated = False
+
+    while pending:
+        if visited >= DISCOVERY_MAX_DIRECTORIES:
+            truncated = True
+            break
+        directory, depth = pending.popleft()
+        visited += 1
+        try:
+            with os.scandir(directory) as entries:
+                children = sorted(entries, key=lambda entry: entry.name)
+        except OSError as exc:
+            if directory == root:
+                raise RepositoryError(f"Cannot read project discovery root {root}: {exc}") from exc
+            truncated = True
+            continue
+
+        is_repository = False
+        for entry in children:
+            if entry.name != ".git":
+                continue
+            try:
+                is_repository = entry.is_dir(follow_symlinks=False) or entry.is_file(
+                    follow_symlinks=False
+                )
+            except OSError:
+                truncated = True
+            break
+
+        if is_repository:
+            if len(projects) >= DISCOVERY_MAX_PROJECTS:
+                truncated = True
+                break
+            projects.append({"path": os.fspath(directory), "name": directory.name})
+            continue
+
+        descendants: list[Path] = []
+        for entry in children:
+            if entry.name.startswith(".") or entry.name in _DISCOVERY_SKIPPED_DIRECTORIES:
+                continue
+            try:
+                if entry.is_dir(follow_symlinks=False):
+                    descendants.append(Path(entry.path))
+            except OSError:
+                truncated = True
+        if depth >= DISCOVERY_MAX_DEPTH:
+            if descendants:
+                truncated = True
+            continue
+        pending.extend((child, depth + 1) for child in descendants)
+
+    projects.sort(key=lambda project: project["path"])
+    return {"root": os.fspath(root), "projects": projects, "truncated": truncated}
+
+
+async def discover_projects(path: str) -> dict[str, object]:
+    """Find nearby Git working trees without blocking the daemon event loop."""
+    return await asyncio.to_thread(_discover_projects, path)
 
 
 @dataclass(frozen=True)

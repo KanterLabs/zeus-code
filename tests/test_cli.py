@@ -22,6 +22,7 @@ class FakeClient:
     def __init__(self, data_dir, host=None, remote_command="zeus-code") -> None:
         self.data_dir = data_dir
         self.host = host
+        self.remote_command = remote_command
         self.hello = {"protocol_version": 1, "server_id": "server", "pid": 123}
         self.calls: list[tuple[str, object]] = []
         self.instances.append(self)
@@ -59,6 +60,14 @@ class CLITests(unittest.TestCase):
             self.assertEqual(cli.main(["connect", "homelab", "--data-dir", str(self.data_dir)]), 0)
         self.assertEqual(calls[0], {"data_dir": self.data_dir.resolve(), "initial_host": None})
         self.assertEqual(calls[1], {"data_dir": self.data_dir.resolve(), "initial_host": "homelab"})
+
+    def test_saved_remote_alias_uses_installed_runtime(self) -> None:
+        machines = {"remote": {"alias": "work", "host": "dev", "remote_command": "/home/test/Zeus Runtime/zeus-code.pyz"}}
+        with mock.patch("zeus_code.workspace.CacheStore.load", return_value={"machines": machines}):
+            result, client = self.run_rpc(["status", "--host", "work"])
+        self.assertEqual(result, 0)
+        self.assertEqual(client.host, "dev")
+        self.assertEqual(client.remote_command, machines["remote"]["remote_command"])
 
     def test_tui_runtime_error_is_concise(self) -> None:
         module = types.ModuleType("zeus_code.tui")

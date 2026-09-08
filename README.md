@@ -145,29 +145,39 @@ releases. Tagged releases publish `zeus-code.pyz`, `release.json` and
 
 ## Remote work
 
-Install Zeus Code and an authenticated provider on each remote development
-machine. On the remote machine, run:
+On your laptop, run:
 
 ```sh
-zeus-code serve --background
+npx --yes @kanterlabs/zeus-code@latest connect dev --projects '~/projects'
 ```
 
-On your laptop:
+Replace `dev` with your SSH alias or `user@host`. Zeus installs its runtime over
+SSH, starts or reuses the server, and imports Git repositories from the remote
+folder. The quoted `~/projects` expands on the server. Progress is shown for
+connection, installation, startup, discovery and import.
+
+You can also choose **Connect dev server** from the welcome screen, or press
+**Ctrl+G**, then **a**. Enter the SSH destination and projects folder and choose
+**Connect & import**. The connection and selected server are remembered.
+
+For setup without opening the UI:
 
 ```sh
-zeus-code connect homelab
+zeus-code remote add dev --projects '~/projects'
+zeus-code connect dev
 ```
 
-`homelab` is an example of an existing OpenSSH alias. Zeus reuses SSH keys,
-`ProxyJump`, and host verification. `ssh homelab zeus-code --version` should
-succeed before connecting; the remote command must be on the noninteractive
-SSH shell's `PATH`. Zeus uses batch-mode SSH, so unlock your key with `ssh-agent`
-and complete first-time host verification with normal SSH beforehand.
+The server needs Python 3.11+ with curses and Git; install and authenticate your
+coding provider there. Zeus does not need to be on its SSH shell's PATH.
+Verify `ssh dev` works first: Zeus uses batch-mode SSH and preserves host-key
+verification, SSH keys and `ProxyJump` settings.
 
-**F2** opens the machine view; add more SSH aliases there. Local and remote
-machines share one **machine → project → threads** tree. A repository on two
-machines is two distinct project instances. Register remote paths on their
-machine; repositories are never copied to the client for review.
+Projects, threads and provider execution stay on the server. Discovery checks
+up to four directory levels, skips hidden/generated folders and symlinks, and
+imports at most 200 repositories. Repeat setup to find newly added projects;
+existing registrations are preserved. Use **Ctrl+O** to add another remote path.
+An older running daemon may need a manual restart after its active work finishes;
+connection setup never stops active work.
 
 Disconnected machines retain their last-known execution state with a **stale**
 label. Reconnecting replays persisted sequence numbers and deduplicates events.

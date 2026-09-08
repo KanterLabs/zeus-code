@@ -508,7 +508,9 @@ class TUIApplication:
         self.put(screen, y + 2, x, lead, self.color(10), available)
         self.put(screen, y + 3, x, "Choose a repository as part of creating your first thread.", self.color(10), available)
         self._button(screen, y + 5, x, "+ New thread   Enter", self._new_thread_form, primary=True)
-        self.put(screen, y + 7, x, "Ctrl+N  New thread    Ctrl+O  Add repository", self.color(10), available)
+        if width >= 52:
+            self._button(screen, y + 5, x + 28, "Connect dev server", self._remote_server_form)
+        self.put(screen, y + 7, x, "Ctrl+N new · Ctrl+O repository · Ctrl+G servers", self.color(10), available)
         if y + 9 < height - 2:
             self.put(screen, y + 9, x, "Your agents keep working when you leave this window.", self.color(10), available)
 
@@ -590,7 +592,9 @@ class TUIApplication:
         form = self.form
         self._wput(window, 0, 2, f" {form.title} ", self.color(1) | curses.A_BOLD)
         machine = self.workspace.machines.get(self._form_machine_id or self.workspace.selected_machine_id, {})
-        self._wput(window, 1, 3, f"On {machine.get('alias', 'local')}  ·  Tab next field  ·  Esc close", self.color(10), width - 6)
+        context = ("Projects and agents stay on your server · SSH connection"
+                   if form.title == "Connect dev server" else f"On {machine.get('alias', 'local')}  ·  Tab next field  ·  Esc close")
+        self._wput(window, 1, 3, context, self.color(10), width - 6)
         count = max(1, (height - 9) // 3)
         first = max(0, form.index - count + 1)
         for row, index in enumerate(range(first, min(len(form.fields), first + count))):
@@ -614,11 +618,15 @@ class TUIApplication:
             self._mouse_targets.append((y, 3, 2, width - 6, lambda i=index: self._focus_form_field(form, i)))
         field = form.fields[form.index][0]
         hint = form.hints.get(field, "← → choose" if form.choices.get(field) else "Type to replace the default · Ctrl+U clear")
+        if form.busy and form.progress:
+            hint = form.progress
         self._wput(window, height - 6, 3, hint, self.color(10), width - 6)
         if form.error:
             for row, line in enumerate(wrap_text(form.error, width - 6)[:2]):
                 self._wput(window, height - 5 + row, 3, line, self.color(4), width - 6)
         label = "Working…" if form.busy else ("Create thread  Ctrl+S" if form.title == "New thread" else "Save  Ctrl+S")
+        if form.title == "Connect dev server" and not form.busy:
+            label = "Connect & import  Ctrl+S"
         self._button(window, height - 3, 3, label, lambda: form.key(19), primary=not form.busy)
         self._wput(window, height - 2, 3, "Enter next / finish    Shift+Tab back    ↑↓ navigate", self.color(10), width - 6)
 
@@ -669,7 +677,7 @@ class TUIApplication:
         self._wput(window, height - 2, 2, "↑↓ select · Enter load file patch", curses.A_DIM)
 
     def _overlay_machines(self, window: Any, height: int, width: int) -> None:
-        self._wput(window, 0, 2, " Machines — a add · Esc close ", self.color(1) | curses.A_BOLD)
+        self._wput(window, 0, 2, " Servers — a connect dev server · Esc close ", self.color(1) | curses.A_BOLD)
         for index, machine in enumerate(self.workspace.machines.values()):
             host = machine.get("host") or "local socket"
             text = f"{machine.get('alias')}  {machine.get('connection')}  {host}"
@@ -1063,7 +1071,7 @@ class TUIApplication:
                 elif key == curses.KEY_PPAGE:
                     self.diff_scroll = max(0, self.diff_scroll - 15)
         elif self.overlay == "machines" and key in (ord("a"), ord("A")):
-            self._show_form("Add SSH machine", [("alias", ""), ("host", "")], self._submit_machine)
+            self._remote_server_form()
         elif self.overlay == "approval" and key in (ord("y"), ord("n")):
             selected = self.approval_choice
             if selected:
@@ -1172,16 +1180,42 @@ class TUIApplication:
             self._submit_model,
         )
 
+    def _remote_server_form(self, host: str = "") -> None:
+        self._show_form(
+            "Connect dev server", [("host", host), ("projects_root", "~/projects"), ("alias", "")],
+            self._submit_machine,
+            labels={"host": "SSH destination", "projects_root": "Projects folder on the server", "alias": "Display name (optional)"},
+            hints={"host": "SSH alias or user@host, e.g. dev. First verify that ssh dev works.",
+                   "projects_root": "Connect installs/starts Zeus and imports repositories here. Files stay remote.",
+                   "alias": "Leave blank to use the SSH destination. Python 3.11+ is required on the server."},
+        )
+
     def _submit_machine(self, values: dict[str, str]) -> None:
-        try:
-            machine = self.workspace.add_machine(values["alias"], values["host"])
+        if self.form is None or self.form.busy:
+            return
+        form = self.form
+
+        def progress(message: str) -> None:
+            form.progress = message
+            self.status = message
+
+        async def connect() -> dict[str, Any]:
+            return await self.workspace.connect_remote(values["host"], values.get("projects_root", "~/projects"),
+                                                       alias=values.get("alias", ""), on_progress=progress)
+
+        def connected(result: dict[str, Any]) -> None:
             self.workspace.start_polling()
-            self.overlay, self.form = None, None
-            self.status = f"Added {machine['alias']}"
-        except Exception as exc:
-            self.status = str(exc)
-            if self.form:
-                self.form.error = str(exc)
+            self._load_selected_composer()
+            self.focus = "sidebar"
+            machine_id = result["machine"]["id"]
+            self.tree_index = next((i for i, row in enumerate(build_tree_rows(self.workspace)) if row.machine_id == machine_id), 0)
+            detail = f"Connected to {result['machine']['alias']} · {result['projects']} projects · choose one and press Ctrl+N"
+            if result.get("warnings") or result.get("truncated"):
+                detail += " · Some repositories were skipped; use Ctrl+O to add another folder"
+            # spawn sets its generic status after callbacks; publish the result next tick.
+            asyncio.get_running_loop().call_soon(setattr, self, "status", detail)
+
+        self._run_form_request(connect(), success="Connected to dev server", callback=connected)
 
     def _submit_project(self, values: dict[str, str]) -> None:
         machine_id = self._form_machine_id or self.workspace.selected_machine_id
@@ -1267,12 +1301,19 @@ def run_tui(data_dir: Path | None = None, initial_host: str | None = None) -> No
     if not sys.stdin.isatty() or not sys.stdout.isatty():
         raise RuntimeError("Zeus Code's TUI needs an interactive terminal (TTY). Run it directly in a terminal.")
     workspace = Workspace(data_dir=data_dir)
+    setup_host = None
     if initial_host:
-        machine_id = workspace.ensure_host(initial_host)
-        workspace.switch(machine_id)
+        machine = next((m for m in workspace.machines.values() if m.get("host") == initial_host), None)
+        if machine is not None and machine.get("remote_command"):
+            workspace.switch(machine["id"])
+        else:
+            setup_host = initial_host
 
     def wrapped(screen: Any) -> None:
-        asyncio.run(TUIApplication(workspace).run(screen))
+        app = TUIApplication(workspace)
+        if setup_host:
+            app._remote_server_form(setup_host)
+        asyncio.run(app.run(screen))
 
     curses.wrapper(wrapped)
 
