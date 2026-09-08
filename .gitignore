@@ -6,3 +6,5 @@ dist/
 build/
 *.egg-info/
 .coverage
+node_modules/
+*.tgz
