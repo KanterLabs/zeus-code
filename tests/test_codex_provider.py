@@ -7,6 +7,8 @@ from pathlib import Path
 import tempfile
 import textwrap
 import unittest
+import sys
+from unittest.mock import patch
 
 from zeus_code.providers.base import ProviderError, RunContext
 from zeus_code.providers.codex import CodexProvider
@@ -466,6 +468,19 @@ class CodexProviderTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(result["available"])
         self.assertIn("codex login", result["detail"])
         self.assertEqual(len(result["models"]), 2)
+
+    async def test_user_local_codex_works_without_interactive_shell_path(self):
+        executable = self.directory / ".local/bin/codex"
+        executable.parent.mkdir(parents=True)
+        executable.write_text(FAKE_CODEX.replace("#!/usr/bin/env python3", "#!" + sys.executable))
+        executable.chmod(0o700)
+        with patch.dict(os.environ, {"HOME": str(self.directory), "PATH": "/usr/bin:/bin"}):
+            provider = CodexProvider(request_timeout=2.0)
+            result = await provider.check()
+            self.assertTrue(result['available'])
+            context, events, _ = self.context()
+            await provider.run(context, "normal")
+        self.assertIn(("message", {"role": "assistant", "text": "Done", "item_id": "msg-1"}), events)
 
     async def test_missing_executable_is_unavailable(self):
         result = await CodexProvider(str(self.directory / "missing")).check()

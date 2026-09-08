@@ -156,6 +156,12 @@ def build_tree_rows(workspace: Workspace) -> list[TreeRow]:
             by_project.setdefault(str(thread.get("project_id")), []).append(thread)
         for project in workspace.projects(machine_id):
             project_id = str(project.get("id"))
+            selected = (
+                machine_id == workspace.selected_machine_id
+                and project_id == workspace.state.get("selected_project")
+            )
+            if not selected and not by_project.get(project_id):
+                continue
             rows.append(TreeRow("project", machine_id, project_id, None, f"  {project.get('name', project_id)}"))
             for thread in sorted(by_project.get(project_id, []), key=lambda item: str(item.get("updated_at", "")), reverse=True):
                 thread_id = str(thread.get("id"))
@@ -168,6 +174,34 @@ def build_tree_rows(workspace: Workspace) -> list[TreeRow]:
                     )
                 )
     return rows
+
+
+def project_picker_results(
+    workspace: Workspace, query: str = "", *, machine_id: str | None = None,
+) -> list[dict[str, Any]]:
+    """Return every registered project on one machine, filtered by name or path."""
+    machine_id = machine_id or workspace.selected_machine_id
+    words = query.casefold().split()
+    selected_id = workspace.state.get("selected_project") if machine_id == workspace.selected_machine_id else None
+    results: list[dict[str, Any]] = []
+    for project in workspace.projects(machine_id):
+        name = str(project.get("name") or project.get("id") or "Project")
+        path = str(project.get("path") or "")
+        if words and not all(word in f"{name} {path}".casefold() for word in words):
+            continue
+        results.append({
+            "machine_id": machine_id,
+            "project": project,
+            "label": f"{name}  ·  {path}" if path else name,
+        })
+    return sorted(
+        results,
+        key=lambda result: (
+            0 if result["project"].get("id") == selected_id else 1,
+            str(result["project"].get("name") or "").casefold(),
+            str(result["project"].get("path") or "").casefold(),
+        ),
+    )
 
 
 class TUIApplication:
@@ -412,8 +446,8 @@ class TUIApplication:
             y += size
         if not self.workspace.projects():
             self.put(screen, min(y + 1, end), 4, "No repositories yet", self.color(8), width - 6)
-        self.put(screen, top + height - 2, 3, "+ Repository   Ctrl+O", self.color(12), width - 5)
-        self._mouse_targets.append((top + height - 2, 2, 1, width - 3, self._new_project_form))
+        self.put(screen, top + height - 2, 3, "Open project   Ctrl+O", self.color(12), width - 5)
+        self._mouse_targets.append((top + height - 2, 2, 1, width - 3, self._open_project_picker))
         self.put(screen, top + height - 1, 3, "Machines       Ctrl+G", self.color(8), width - 5)
         self._mouse_targets.append((top + height - 1, 2, 1, width - 3, self._show_machines))
 
@@ -443,10 +477,15 @@ class TUIApplication:
                 self.put(screen, top + offset, content_left, line, attr, content_width)
         self._draw_activity(screen, activity_y, content_left, content_width, thread)
         self._fill(screen, composer_y, content_left, content_width, 5, self.color(7))
-        border = self.color(12 if self.focus == "composer" else 15)
+        provider_warning = self._provider_warning(thread)
+        border = self.color(4 if provider_warning else 12 if self.focus == "composer" else 15)
         self.put(screen, composer_y, content_left, "╭" + "─" * (content_width - 2) + "╮", border, content_width)
         mode = permission_label(thread)
-        title = " Message " + str(thread.get("provider", "agent")) + (" · " + mode if mode else "") + " "
+        title = (
+            " " + provider_warning[0] + " "
+            if provider_warning
+            else " Message " + str(thread.get("provider", "agent")) + (" · " + mode if mode else "") + " "
+        )
         self.put(screen, composer_y, content_left + 2, title, border)
         for row in range(1, 4):
             self.put(screen, composer_y + row, content_left, "│", border)
@@ -466,8 +505,14 @@ class TUIApplication:
         if self.focus == "composer":
             self._cursor_position = (composer_y + 1 + caret_line - first_line, content_left + 2 + caret_column)
         enter_action = "Enter send" if self.workspace.state["settings"].get("enter_sends", True) else "Ctrl+S send"
-        controls = "Ctrl+X stop   F7 tool output   Ctrl+D review" if thread.get("state") in ACTIVE_STATES else f"{enter_action}   Ctrl+J newline   Ctrl+D review"
-        self.put(screen, height - 2, content_left, controls, self.color(10), content_width)
+        controls = (
+            provider_warning[1]
+            if provider_warning
+            else "Ctrl+X stop   F7 tool output   Ctrl+D review"
+            if thread.get("state") in ACTIVE_STATES
+            else f"{enter_action}   Ctrl+J newline   Ctrl+D review"
+        )
+        self.put(screen, height - 2, content_left, controls, self.color(4 if provider_warning else 10), content_width)
         self._mouse_targets.append((composer_y, content_left, 5, content_width, lambda: setattr(self, "focus", "composer")))
 
     def _thread_activity(self, thread: dict[str, Any], machine_id: str | None = None) -> RunActivity:
@@ -478,6 +523,16 @@ class TUIApplication:
             self.workspace.thread_run(str(thread["id"]), machine_id), now=time.time(),
             stale=bool(machine.get("stale")) or machine.get("connection") != "connected",
         )
+
+    def _provider_warning(self, thread: dict[str, Any]) -> tuple[str, str] | None:
+        provider_name = str(thread.get("provider") or "provider")
+        readiness = self.workspace.selected_machine.get("providers", {}).get(provider_name, {})
+        if readiness.get("available") is not False:
+            return None
+        display_name = {"codex": "Codex", "opencode": "OpenCode"}.get(provider_name.casefold(), provider_name)
+        machine_name = str(self.workspace.selected_machine.get("alias") or self.workspace.selected_machine_id)
+        detail = str(readiness.get("detail") or f"Finish {display_name} setup on {machine_name}, then reconnect.")
+        return f"{display_name} unavailable on {machine_name}", detail
 
     def _draw_activity(self, screen: Any, y: int, x: int, width: int, thread: dict[str, Any]) -> None:
         activity = self._thread_activity(thread)
@@ -510,7 +565,7 @@ class TUIApplication:
         self._button(screen, y + 5, x, "+ New thread   Enter", self._new_thread_form, primary=True)
         if width >= 52:
             self._button(screen, y + 5, x + 28, "Connect dev server", self._remote_server_form)
-        self.put(screen, y + 7, x, "Ctrl+N new · Ctrl+O repository · Ctrl+G servers", self.color(10), available)
+        self.put(screen, y + 7, x, "Ctrl+N new · Ctrl+O open project · Ctrl+G servers", self.color(10), available)
         if y + 9 < height - 2:
             self.put(screen, y + 9, x, "Your agents keep working when you leave this window.", self.color(10), available)
 
@@ -557,6 +612,8 @@ class TUIApplication:
             return
         if self.overlay == "search":
             self._overlay_search(window, box_height, box_width)
+        elif self.overlay == "projects":
+            self._overlay_projects(window, box_height, box_width)
         elif self.overlay == "form" and self.form:
             self._overlay_form(window, box_height, box_width)
             if self._cursor_position:
@@ -586,6 +643,30 @@ class TUIApplication:
             thread, project, machine = result["thread"], result["project"], result["machine"]
             text = f"{thread.get('title')}  · {project.get('name')}  · {machine.get('alias')}  · {thread.get('provider')}  · {thread.get('state')}"
             self._wput(window, 4 + index - start, 2, text, curses.A_REVERSE if index == self.search_index else 0, width - 4)
+
+    def _overlay_projects(self, window: Any, height: int, width: int) -> None:
+        machine = self.workspace.selected_machine
+        alias = str(machine.get("alias") or self.workspace.selected_machine_id)
+        self._wput(window, 0, 2, f" Open project on {alias} — Esc close ", self.color(1) | curses.A_BOLD)
+        self._wput(window, 2, 2, "> " + self.search_query, curses.A_REVERSE, width - 4)
+        results = project_picker_results(self.workspace, self.search_query)
+        self.search_index = min(max(0, self.search_index), len(results))
+        self._wput(
+            window, 4, 2, "+ Add a repository by path…",
+            curses.A_REVERSE if self.search_index == 0 else self.color(12), width - 4,
+        )
+        available = max(0, height - 9)
+        selected_result = max(0, self.search_index - 1)
+        start = max(0, min(selected_result - available // 2, max(0, len(results) - available)))
+        for index, result in enumerate(results[start:start + available], start=start):
+            option_index = index + 1
+            self._wput(
+                window, 6 + index - start, 2, str(result["label"]),
+                curses.A_REVERSE if option_index == self.search_index else 0, width - 4,
+            )
+        if not results:
+            self._wput(window, 6, 2, "No matching projects.", self.color(10), width - 4)
+        self._wput(window, height - 2, 2, "Type to search name or path · ↑↓ choose · Enter open", self.color(10), width - 4)
 
     def _overlay_form(self, window: Any, height: int, width: int) -> None:
         assert self.form is not None
@@ -759,7 +840,8 @@ class TUIApplication:
             "Page Up / Down      browse history without following output",
             "Ctrl+X              cancel selected thread run",
             "Ctrl+Y              retry an uncertain send with the same request ID",
-            "Ctrl+G / Ctrl+O    machines / add repository (also F2 / F3)",
+            "Ctrl+G / Ctrl+O    machines / open project (F2 also opens machines)",
+            "F3                  add repository by path",
             "F4                  model and reasoning setting",
             "F6 / F7             pending approval / expand tool details",
             "Diff Tab/↑↓/Enter   switch panes / select / load scoped patch",
@@ -801,9 +883,9 @@ class TUIApplication:
             if self.overlay == "form" and self.form:
                 self.form.key(key)
                 return
-            if self.overlay == "search":
+            if self.overlay in {"search", "projects"}:
                 self.search_query += key
-                self.search_index = 0
+                self.search_index = 0 if self.overlay == "search" else 1
                 return
             if self.overlay is None and self.focus == "composer" and self.workspace.selected_thread is not None:
                 self._insert(key)
@@ -875,7 +957,9 @@ class TUIApplication:
             self._send_prompt(retry=True)
         elif key in (curses.KEY_F2, 7):
             self._show_machines()
-        elif key in (curses.KEY_F3, 15):
+        elif key == 15:  # Ctrl+O
+            self._open_project_picker()
+        elif key == curses.KEY_F3:
             self._new_project_form()
         elif key == curses.KEY_F4:
             self._model_form()
@@ -905,6 +989,12 @@ class TUIApplication:
 
     def _show_machines(self) -> None:
         self.overlay = "machines"
+
+    def _open_project_picker(self) -> None:
+        if not self.workspace.projects():
+            self._new_project_form()
+            return
+        self.overlay, self.search_query, self.search_index = "projects", "", 1
 
     def _open_tree_row(self, index: int) -> None:
         rows = build_tree_rows(self.workspace)
@@ -978,9 +1068,14 @@ class TUIApplication:
 
     def _send_prompt(self, *, retry: bool = False) -> None:
         machine_id = self.workspace.selected_machine_id
-        thread_id = str((self.workspace.selected_thread or {}).get("id") or "")
+        thread = self.workspace.selected_thread or {}
+        thread_id = str(thread.get("id") or "")
         if not thread_id:
             self.status = "Select a thread before sending"
+            return
+        if self._provider_warning(thread):
+            self.workspace.set_draft(self.composer)
+            self.status = "Draft kept · finish provider setup before sending"
             return
         key = (machine_id, thread_id)
         if key in self._sending:
@@ -1042,6 +1137,28 @@ class TUIApplication:
             elif 32 <= key <= 0x10FFFF and not curses.KEY_MIN <= key <= curses.KEY_MAX:
                 self.search_query += chr(key)
                 self.search_index = 0
+        elif self.overlay == "projects":
+            results = project_picker_results(self.workspace, self.search_query)
+            self.search_index = min(max(0, self.search_index), len(results))
+            if key == curses.KEY_UP:
+                self.search_index = max(0, self.search_index - 1)
+            elif key == curses.KEY_DOWN:
+                self.search_index = min(len(results), self.search_index + 1)
+            elif key in (10, 13, curses.KEY_ENTER):
+                if self.search_index == 0:
+                    self._new_project_form()
+                elif results:
+                    result = results[self.search_index - 1]
+                    project = result["project"]
+                    self.workspace.switch(result["machine_id"], str(project.get("id")))
+                    self._load_selected_composer()
+                    self._new_thread_form()
+            elif key in (curses.KEY_BACKSPACE, 127, 8):
+                self.search_query = self.search_query[:-1]
+                self.search_index = 1
+            elif 32 <= key <= 0x10FFFF and not curses.KEY_MIN <= key <= curses.KEY_MAX:
+                self.search_query += chr(key)
+                self.search_index = 1
         elif self.overlay == "diff":
             if key == 9:
                 self.diff_focus = "patch" if self.diff_focus == "files" else "files"
@@ -1209,7 +1326,7 @@ class TUIApplication:
             self.focus = "sidebar"
             machine_id = result["machine"]["id"]
             self.tree_index = next((i for i, row in enumerate(build_tree_rows(self.workspace)) if row.machine_id == machine_id), 0)
-            detail = f"Connected to {result['machine']['alias']} · {result['projects']} projects · choose one and press Ctrl+N"
+            detail = f"Connected to {result['machine']['alias']} · {result['projects']} projects · Ctrl+O opens one"
             if result.get("warnings") or result.get("truncated"):
                 detail += " · Some repositories were skipped; use Ctrl+O to add another folder"
             # spawn sets its generic status after callbacks; publish the result next tick.
@@ -1318,4 +1435,7 @@ def run_tui(data_dir: Path | None = None, initial_host: str | None = None) -> No
     curses.wrapper(wrapped)
 
 
-__all__ = ["TUIApplication", "TreeRow", "build_tree_rows", "conversation_lines", "event_lines", "execution_label", "run_tui"]
+__all__ = [
+    "TUIApplication", "TreeRow", "build_tree_rows", "conversation_lines", "event_lines", "execution_label",
+    "project_picker_results", "run_tui",
+]

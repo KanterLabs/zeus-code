@@ -13,6 +13,16 @@ polished terminal UI for v1.1, followed by workspace and remote improvements.
 
 ## Start
 
+The latest fixes are on GitHub Releases; npm publishing is awaiting trusted
+publisher configuration. If you already downloaded v1.0.8, update and open with:
+
+```sh
+python3 zeus-code-1.0.8.pyz update --install-dir ~/.local/bin
+~/.local/bin/zeus-code connect dev
+```
+
+Replace `dev` with your SSH destination. This keeps existing projects and threads.
+
 Requires **Python 3.11+**, Git, and a terminal with curses support on Linux or
 macOS. Use WSL on Windows. Install and authenticate Codex, OpenCode, or both on
 each machine where tasks will execute. Zeus uses those existing credentials.
@@ -78,7 +88,7 @@ Offline machines show their last known state with a frozen timer.
 Form defaults are selected: typing replaces them, and **Ctrl+U** clears a field.
 **Tab / Shift+Tab** move between fields; **Enter** advances or submits the last
 field. Errors stay inside the form so you can correct a path and retry.
-You can also register repositories separately with **Ctrl+O** or **F3**.
+Press **Ctrl+O** to search registered projects by name or path. **F3** adds a repository by path.
 
 For an installed command, build the standalone application:
 
@@ -148,7 +158,7 @@ releases. Tagged releases publish `zeus-code.pyz`, `release.json` and
 On your laptop, run:
 
 ```sh
-npx --yes @kanterlabs/zeus-code@latest connect dev --projects '~/projects'
+~/.local/bin/zeus-code connect dev --projects '~/projects'
 ```
 
 Replace `dev` with your SSH alias or `user@host`. Zeus installs its runtime over
@@ -168,14 +178,18 @@ zeus-code connect dev
 ```
 
 The server needs Python 3.11+ with curses and Git; install and authenticate your
-coding provider there. Zeus does not need to be on its SSH shell's PATH.
+coding provider there. Zeus finds Codex in common user installation folders
+(including `~/.local/bin`) even when SSH omits them from PATH. Zeus itself
+does not need to be on the SSH shell's PATH.
 Verify `ssh dev` works first: Zeus uses batch-mode SSH and preserves host-key
 verification, SSH keys and `ProxyJump` settings.
 
 Projects, threads and provider execution stay on the server. Discovery checks
 up to four directory levels, skips hidden/generated folders and symlinks, and
 imports at most 200 repositories. Repeat setup to find newly added projects;
-existing registrations are preserved. Use **Ctrl+O** to add another remote path.
+existing registrations are preserved. The sidebar shows projects with conversations
+and your selected project. Press **Ctrl+O** to search all registered projects;
+choose the manual-path action or press **F3** to add another remote path.
 An older running daemon may need a manual restart after its active work finishes;
 connection setup never stops active work.
 
@@ -189,7 +203,7 @@ A disconnected client does not imply that the remote agent has stopped.
 | --- | --- |
 | Ctrl+P | Search threads across all cached machines and projects |
 | Ctrl+N | Choose a repository and create a named provider thread |
-| Ctrl+O / Ctrl+G | Add repository / machines |
+| Ctrl+O / Ctrl+G | Open project / machines |
 | Tab | Switch sidebar/composer focus, or advance a form |
 | Enter | Send; activate selection or advance/submit a form |
 | Alt+Enter / Ctrl+J | Insert a newline |
