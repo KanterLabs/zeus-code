@@ -304,6 +304,9 @@ PYTHONPATH=src python3 -m unittest discover -s tests -v
 python3 scripts/build.py
 python3 scripts/smoke.py
 python3 scripts/smoke.py --executable dist/zeus-code.pyz
+python3 scripts/e2e-npx.py
+# Test the live npm download and terminal launch:
+python3 scripts/e2e-npx.py --package @kanterlabs/zeus-code@latest
 ```
 
 The deterministic suite uses real sockets, SQLite databases, Git repositories,
