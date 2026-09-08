@@ -54,7 +54,8 @@ async function publish(options = {}) {
   const lookup = options.lookup || registryIntegrity;
   const pkg = validate(root, env.GITHUB_REF_NAME);
   const artifact = path.join(root, 'dist', `kanterlabs-zeus-code-${pkg.version}.tgz`);
-  const packed = JSON.parse(execute(['pack', '--json', '--pack-destination', 'dist'], root));
+  execute(['run', 'prepare'], root);
+  const packed = JSON.parse(execute(['pack', '--ignore-scripts', '--json', '--pack-destination', 'dist'], root));
   if (packed.length !== 1 || packed[0].name !== pkg.name || packed[0].version !== pkg.version ||
       packed[0].filename !== path.basename(artifact)) throw new Error('Unexpected npm archive identity');
   const expected = integrity(artifact);

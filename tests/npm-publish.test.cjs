@@ -25,20 +25,20 @@ function fixture(t) {
 test('publishes once then verifies exact registry integrity', async t => {
   const f = fixture(t); let count = 0;
   assert.match(await publish({ ...f, lookup: async () => count++ ? f.hash : null }), /Published and verified/);
-  assert.equal(f.calls[1][0], 'publish');
-  assert.ok(f.calls[1].includes('--ignore-scripts'));
+  assert.equal(f.calls[2][0], 'publish');
+  assert.ok(f.calls[2].includes('--ignore-scripts'));
 });
 test('matching registry bytes are idempotent without authentication', async t => {
   const f = fixture(t); delete f.env.NODE_AUTH_TOKEN;
   assert.match(await publish({ ...f, lookup: async () => f.hash }), /already published/);
-  assert.equal(f.calls.length, 1);
+  assert.equal(f.calls.length, 2);
 });
 test('conflicting bytes and missing token prevent publication', async t => {
   const f = fixture(t);
   await assert.rejects(publish({ ...f, lookup: async () => 'different' }), /different bytes/);
   delete f.env.NODE_AUTH_TOKEN;
   await assert.rejects(publish({ ...f, lookup: async () => null }), /NPM_TOKEN/);
-  assert.ok(f.calls.every(args => args[0] === 'pack'));
+  assert.ok(f.calls.every(args => args[0] !== 'publish'));
 });
 test('tag mismatch prevents packing and publishing', async t => {
   const f = fixture(t); f.env.GITHUB_REF_NAME = 'v1.0.3';

@@ -8,7 +8,9 @@ const { findPython } = require('../bin/zeus-code.cjs');
 try {
   const root = path.resolve(__dirname, '..');
   const python = findPython();
-  const result = spawnSync(python, ['scripts/build.py'], { cwd: root, stdio: 'inherit' });
+  // npm versions differ in whether prepare output is captured by `pack --json`.
+  // Keep build diagnostics on stderr so stdout remains machine-readable.
+  const result = spawnSync(python, ['scripts/build.py'], { cwd: root, stdio: ['inherit', 2, 2] });
   if (result.error) throw result.error;
   if (result.status !== 0) throw new Error('Python release build failed');
   const pkg = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
