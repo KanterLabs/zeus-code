@@ -1,14 +1,14 @@
 # Zeus Code roadmap
 
-Updated September 8, 2026. Released baseline: **v1.0.9**. Tracking: Helm
+Updated September 8, 2026. Released baseline: **v1.1.0**. Tracking: Helm
 project **ZC**; planning is recorded in **ZC-22**, and the complete implementation
-is tracked by **ZC-27** for the **v1.1.0** release candidate. Unrelated future
+is tracked by **ZC-27** for the **v1.1.0** UX release and **v1.1.1** remote-provider follow-up. Unrelated future
 work remains in Backlog. Order below takes priority over older milestone labels.
 
 ## v1.1.0 UX series
 
-All five slices are implemented together and undergoing integrated release
-validation. The normal conversation view stays compact; detail is opened on demand.
+All five slices shipped together in v1.1.0 with verified release assets and
+Python 3.11/3.14 CI. The normal conversation view stays compact; detail is opened on demand.
 
 | Order | Delivery | Cards | User-visible acceptance |
 | --- | --- | --- | --- |
@@ -54,8 +54,12 @@ feature complete merely because a button renders or a server connects.
 
 ## Recent delivery status
 
+- **v1.1.0 / ZC-27:** all five UX slices shipped, including model controls,
+  automatic agent details, transcript/themes, attention and safe client updates.
+  The dev server upgrade retained all populated data after a verified backup.
+
 - **v1.0.3 / ZC-16:** verified GitHub self-update, previous-binary retention and
-  database backup. The v1.1.0 candidate replaces blanket running-daemon refusal
+  database backup. v1.1.0 replaces blanket running-daemon refusal
   with immutable client runtimes; server restart orchestration remains ZC-2.
 - **ZC-5:** npm package exists, but automatic npm publication remains blocked by
   trusted-publisher configuration. GitHub Releases distribute current builds.

@@ -86,3 +86,8 @@ Connected model entries retain provider-reported variant names for the terminal
 picker. Zeus does not synthesize a Codex-style reasoning list for OpenCode.
 Automatic child-agent records are currently normalized from Codex collaboration
 items; OpenCode tool events remain visible through the ordinary transcript.
+
+The v1.1.1 follow-up resolves OpenCode from PATH and common user install
+locations for both discovery and execution. An explicit executable override
+remains authoritative. This covers noninteractive SSH environments that omit
+user-local npm, Bun, OpenCode or Homebrew directories from PATH.

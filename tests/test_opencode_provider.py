@@ -5,8 +5,11 @@ import base64
 import json
 import os
 import sys
+import tempfile
 import unittest
+from pathlib import Path
 from types import SimpleNamespace
+from unittest import mock
 from urllib.parse import parse_qs, urlsplit
 
 from zeus_code.providers.base import RunContext
@@ -308,12 +311,16 @@ class OpenCodeFixture:
 
 
 class FixtureProvider(OpenCodeProvider):
-    def __init__(self, fixture: OpenCodeFixture) -> None:
-        super().__init__(sys.executable)
+    def __init__(
+        self, fixture: OpenCodeFixture, executable: str = sys.executable
+    ) -> None:
+        super().__init__(executable)
         self.fixture = fixture
         self.stops = 0
+        self.executables: list[str] = []
 
     async def _start_server(self, cwd, executable, username, password):
+        self.executables.append(executable)
         self.fixture.expected_directory = cwd
         self.fixture.username = username
         self.fixture.password = password
@@ -453,6 +460,48 @@ class OpenCodeProviderTests(unittest.IsolatedAsyncioTestCase):
             ],
         )
         self.assertFalse(any(path.endswith("prompt_async") for _, path, _ in fixture.requests))
+
+    async def test_user_local_binary_is_used_for_check_and_run_with_minimal_path(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            home = Path(temporary)
+            target = (
+                home
+                / ".local/lib/node_modules/opencode-ai/bin/opencode.exe"
+            )
+            target.parent.mkdir(parents=True)
+            target.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+            target.chmod(0o700)
+            executable = home / ".local/bin/opencode"
+            executable.parent.mkdir(parents=True)
+            executable.symlink_to(
+                "../lib/node_modules/opencode-ai/bin/opencode.exe"
+            )
+            empty_path = home / "empty-path"
+            empty_path.mkdir()
+
+            fixture = OpenCodeFixture()
+            provider = FixtureProvider(fixture, "opencode")
+            with mock.patch.dict(
+                os.environ,
+                {"HOME": str(home), "PATH": str(empty_path)},
+            ):
+                result = await provider.check()
+                self.assertTrue(result["available"])
+                context = RunContext(
+                    "thread-local",
+                    "run-local",
+                    os.getcwd(),
+                    None,
+                    None,
+                    {},
+                    lambda kind, data: asyncio.sleep(0),
+                    lambda request: asyncio.sleep(0, result="allow"),
+                )
+                await provider.run(context, "use the local executable")
+
+        self.assertEqual(provider.executables, [str(executable), str(executable)])
 
     async def test_missing_binary_is_isolated_discovery_failure(self) -> None:
         result = await OpenCodeProvider("definitely-not-an-opencode-binary").check()
