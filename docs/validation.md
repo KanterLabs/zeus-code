@@ -226,3 +226,17 @@ Fresh-cache GitHub installation reports v1.0.5 with npm 10.8.2 `npx` and npm 9
 This machine's npm 9 `npx` misroutes Git preparation to `npm exec install` on a
 fresh cache; the README gives the working `npm exec` fallback. Cached npm 9 npx
 success alone does not establish fresh-install compatibility.
+
+## Download and open E2E (September 8, 2026)
+
+`scripts/e2e-npx.py` exercises npx in a real pseudo-terminal with an empty npm
+cache, isolated home/application state and a working directory outside the
+checkout. It waits for the welcome screen and connected indicator, presses
+Ctrl+Q, verifies the daemon remains running without creating any threads, then
+reopens and verifies the same daemon PID and workspace identity. It stops its
+own daemon and removes only its temporary files. Startup and exit have deadlines.
+
+Both the local packed-checkout test and the live
+`--package @kanterlabs/zeus-code@latest` test passed against npm v1.0.6. No model
+was invoked. The local test runs before publication; a separate homelab job tests
+the exact version from the npm registry after each successful trusted publish.
