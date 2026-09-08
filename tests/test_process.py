@@ -78,6 +78,19 @@ async def wait_until(predicate, timeout: float = 3.0) -> None:
         await asyncio.sleep(0.02)
 
 
+def process_is_terminated(pid: int) -> bool:
+    """Return true for a reaped process or a killed process awaiting PID 1."""
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return True
+    try:
+        fields = Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()
+    except (FileNotFoundError, IndexError, OSError):
+        return False
+    return bool(fields) and fields[0] == "Z"
+
+
 class SupervisedProcessTests(unittest.IsolatedAsyncioTestCase):
     @classmethod
     def setUpClass(cls) -> None:
@@ -228,8 +241,7 @@ time.sleep(60)
         size = marker.stat().st_size
         await asyncio.sleep(0.15)
         self.assertEqual(marker.stat().st_size, size)
-        with self.assertRaises(ProcessLookupError):
-            os.kill(descendant_pid, 0)
+        await wait_until(lambda: process_is_terminated(descendant_pid))
 
     async def test_terminate_cleans_provider_group_including_stubborn_child(self) -> None:
         marker = self.directory / "terminated-writes"
@@ -253,8 +265,7 @@ time.sleep(60)
         size = marker.stat().st_size
         await asyncio.sleep(0.15)
         self.assertEqual(marker.stat().st_size, size)
-        with self.assertRaises(ProcessLookupError):
-            os.kill(descendant_pid, 0)
+        await wait_until(lambda: process_is_terminated(descendant_pid))
 
     async def test_parent_sigkill_stops_provider_descendant_writes(self) -> None:
         marker = self.directory / "orphan-writes"
@@ -317,8 +328,7 @@ asyncio.run(main())
         self.assertLess(last_write - killed_at, 0.75)
         self.assertEqual(marker.stat().st_size, size)
         for pid in (ready["supervisor"], ready["descendant"]):
-            with self.assertRaises(ProcessLookupError):
-                os.kill(pid, 0)
+            await wait_until(lambda pid=pid: process_is_terminated(pid))
 
 
 if __name__ == "__main__":

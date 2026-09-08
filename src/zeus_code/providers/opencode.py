@@ -14,6 +14,7 @@ import signal
 from collections import deque
 from collections.abc import AsyncGenerator, AsyncIterator
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 from urllib.parse import quote, urlencode, urlsplit
 
@@ -25,6 +26,29 @@ _READY = re.compile(r"opencode server listening on (http://\S+)")
 _EVENT_TEXT_LIMIT = 64 * 1024
 _SSE_EVENT_LIMIT = 1024 * 1024
 _HTTP_BODY_LIMIT = 64 * 1024 * 1024
+
+
+def _opencode_executable(executable: str) -> str | None:
+    """Resolve one binary for readiness checks and runs over non-login SSH."""
+    found = shutil.which(executable)
+    if found is not None or executable != "opencode":
+        return found
+    home = Path.home()
+    # Noninteractive SSH commonly omits user-local installers and Homebrew.
+    # Explicit paths are never replaced with an unrelated installation.
+    for directory in (
+        home / ".local/bin",
+        home / ".opencode/bin",
+        home / ".bun/bin",
+        home / ".npm-global/bin",
+        home / ".volta/bin",
+        Path("/opt/homebrew/bin"),
+        Path("/usr/local/bin"),
+    ):
+        found = shutil.which(str(directory / "opencode"))
+        if found is not None:
+            return found
+    return None
 
 
 class _HTTPError(RuntimeError):
@@ -165,7 +189,7 @@ class OpenCodeProvider:
         self.startup_timeout = startup_timeout
 
     async def check(self) -> dict[str, Any]:
-        executable = shutil.which(self.executable)
+        executable = _opencode_executable(self.executable)
         if executable is None:
             return {
                 "available": False,
@@ -216,7 +240,7 @@ class OpenCodeProvider:
                 await self._stop_server(server)
 
     async def run(self, context: RunContext, prompt: str) -> None:
-        executable = shutil.which(self.executable)
+        executable = _opencode_executable(self.executable)
         if executable is None:
             raise ProviderError("OpenCode is not installed or is not on PATH")
 

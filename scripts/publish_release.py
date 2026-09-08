@@ -200,6 +200,7 @@ def release_body() -> str:
 - F5: unread results and approvals across machines, with preserved drafts and history position.
 - Ctrl+K: searchable commands with clear targets, plus dark/light/terminal/monochrome themes.
 - Compatible client updates retain immutable runtimes while daemon work continues.
+- OpenCode and Codex are discovered in common user install locations even in minimal SSH environments.
 
 ## Update
 

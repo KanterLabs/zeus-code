@@ -1,6 +1,18 @@
 # v1 validation
 
-## v1.1.0 UX candidate
+## v1.1.1 remote discovery follow-up
+
+The local suite passes **253 Python tests**. The packaged lifecycle and terminal
+walkthrough pass. With a minimal noninteractive SSH PATH, the built application
+finds the installed OpenCode 1.18.26 executable and discovers its 24 models.
+A symlink fixture verifies discovery and execution use the same resolved binary.
+
+Process fixtures retain their bounded termination and stopped-write checks while
+recognizing killed Linux zombies as terminated. The eight process tests pass in
+Python 3.11 containers both with and without an init process. No supervisor
+runtime behavior changed.
+
+## v1.1.0 UX release
 
 September 8, 2026: the integrated local suite passes **252 Python tests** and
 **16 npm tests**. Model and agent integration fixtures use the installed
@@ -18,7 +30,11 @@ the built zipapp. The final packaged walkthrough and source/artifact lifecycle c
 A real retained v1.0.9 daemon also keeps its PID, active row, draft and model
 through a v1.1.0 client update, with a verified backup and working RPC diff.
 The Python 3.13+ shutdown socket race has a deterministic regression.
-GitHub publication and post-release verification are tracked in **ZC-27**.
+The published GitHub archive matches the locally verified build byte for byte.
+Release CI passed Python 3.11/3.14 and the npm packaging checks. The dev server
+upgrade preserved all 97 projects, 3 threads, 5 runs and 333 events with a
+verified pre-upgrade backup. npm registry publication remains blocked by trusted
+publisher configuration; GitHub Releases carry this version. Tracking: **ZC-27**.
 
 Updater fixtures retain a live process and populated SQLite state while
 switching a client launcher. They verify lazy imports from the old archive,
