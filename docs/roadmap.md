@@ -1,6 +1,6 @@
 # Zeus Code roadmap
 
-Updated September 8, 2026. Released baseline: **v1.1.0**. Tracking: Helm
+Updated September 8, 2026. Released baseline: **v1.1.1**. Tracking: Helm
 project **ZC**; planning is recorded in **ZC-22**, and the complete implementation
 is tracked by **ZC-27** for the **v1.1.0** UX release and **v1.1.1** remote-provider follow-up. Unrelated future
 work remains in Backlog. Order below takes priority over older milestone labels.
