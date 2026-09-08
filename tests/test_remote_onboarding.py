@@ -120,3 +120,22 @@ class RemoteOnboardingTests(unittest.IsolatedAsyncioTestCase):
                          ['snapshot', 'discover_projects'])
         client.close.assert_awaited_once()
         self.assertEqual(self.workspace.selected_machine_id, 'local')
+
+    async def test_poll_exits_if_completed_rpc_swallows_cancellation(self):
+        started = asyncio.Event()
+        release = asyncio.Event()
+
+        async def completed_rpc(machine_id):
+            started.set()
+            try:
+                await release.wait()
+            except asyncio.CancelledError:
+                pass  # Reproduce wait_for's completed-result cancellation race.
+
+        with patch.object(self.workspace, 'sync_machine', side_effect=completed_rpc):
+            task = asyncio.create_task(self.workspace.poll_forever('local'))
+            await started.wait()
+            task.cancel()
+            self.workspace._wake.set()
+            await asyncio.wait_for(task, 2)
+            self.assertTrue(task.done())
