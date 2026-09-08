@@ -1,5 +1,27 @@
 # v1 validation
 
+## v1.0.3 self-update
+
+September 8, 2026: the Linux candidate passed **178 tests**, including release
+publication and updater fixtures, plus the standalone build and source/packaged
+lifecycle smoke checks. The release workflow runs the suite on Python 3.11 and
+3.14 before publishing a tagged release.
+
+The updater checks the latest stable GitHub release, verifies artifact and
+metadata checksums, and requires the embedded version/schema to agree. Tests
+cover failed downloads, malformed metadata, downgrade prevention, renamed
+bundles, source-checkout protection, explicit install directories, daemon-lock
+refusal, populated-data backup integrity, retained binaries and incompatible
+schemas. Updating does not run a migration or restore a database.
+
+Release fixtures cover reproducible bytes despite source timestamp changes,
+tag/source mismatch, incomplete-draft retries, conflicting assets and idempotent
+publication. The three published assets are `zeus-code.pyz`, `release.json` and
+`SHA256SUMS`. Final live release-download and CI evidence is tracked in Helm
+**ZC-16**. The physical two-machine gate below remains open.
+
+## v1.0.2 baseline
+
 Validated on September 7, 2026, on Linux with Python 3.14.4. The implemented
 application version is 1.0.2. The compatibility target is Python 3.11+ on Linux
 and macOS; CI contains Python 3.11 and 3.14 jobs on `homelab`. macOS and the CI

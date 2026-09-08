@@ -4,6 +4,12 @@ Updated September 8, 2026. Baseline: **v1.0.2**. Tracking: Helm project **ZC**;
 planning task **ZC-1**. Version targets describe release scope; dates will follow
 implementation and acceptance evidence.
 
+**Pulled forward for v1.0.3:** ZC-16 adds a simple latest-release self-update
+command with verified downloads, previous-binary retention and a pre-update
+database backup. Its scope covers stopped-daemon, same-schema updates; daemon
+restart orchestration remains ZC-2. ZC-5 still covers broader installation and
+prerequisite guidance. See the [update instructions](../README.md#update).
+
 The next release, **v1.1**, focuses on daily usability: setup, navigation and a
 polished terminal UI. A user should be able to install Zeus, launch it from any
 directory, choose a repository, start a conversation and understand what is
@@ -112,7 +118,6 @@ private addresses and credentials out of the public evidence.
 
 | Card | Improvement | Acceptance outcome |
 | --- | --- | --- |
-| ZC-16 | Local update command | Verify the target artifact and a pre-upgrade backup, retain the old binary and check rollback compatibility; preserve populated data through failed migrations. |
 | ZC-17 | Optional OS-managed daemon | Explicitly manage user-service startup after login on Linux/macOS; test each platform’s logout/reboot behavior while preserving state and preventing prompt replay. |
 | ZC-18 | Full-history search and export | Search beyond the bounded client cache and export a scoped Markdown/JSON transcript with bounded resource use and explicit overwrite behavior. |
 
@@ -129,7 +134,6 @@ pass is a preference, so independent work can start without artificial blockers.
 | ZC-12 | ZC-9 |
 | ZC-13 | ZC-6 |
 | ZC-15 | ZC-14, ZC-7 |
-| ZC-16 | ZC-5, ZC-2 |
 | ZC-17 | ZC-5, ZC-2, ZC-16 |
 | ZC-18 | ZC-10 |
 

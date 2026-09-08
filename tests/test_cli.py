@@ -130,6 +130,25 @@ class CLITests(unittest.TestCase):
         self.assertEqual(result, 0)
         self.assertEqual(client.calls, [("snapshot", None)])
 
+    def test_update_is_local_and_does_not_open_a_provider_or_daemon(self) -> None:
+        module = types.ModuleType("zeus_code.updater")
+        module.update = mock.Mock(return_value=0)
+        with mock.patch.dict("sys.modules", {"zeus_code.updater": module}), mock.patch.object(cli, "RPCClient") as rpc:
+            self.assertEqual(cli.main(["update", "--check", "--install-dir", str(self.data_dir / "bin"),
+                                       "--data-dir", str(self.data_dir)]), 0)
+        module.update.assert_called_once_with(self.data_dir.resolve(), check_only=True,
+                                              install_dir=self.data_dir / "bin")
+        rpc.assert_not_called()
+
+    def test_update_rejects_remote_host_without_downloading(self) -> None:
+        module = types.ModuleType("zeus_code.updater")
+        module.update = mock.Mock()
+        stderr = io.StringIO()
+        with mock.patch.dict("sys.modules", {"zeus_code.updater": module}), mock.patch("sys.stderr", stderr):
+            self.assertEqual(cli.main(["update", "--host", "dev"]), 1)
+        module.update.assert_not_called()
+        self.assertIn("update is local-only", stderr.getvalue())
+
     def test_result_output_is_json(self) -> None:
         with mock.patch.object(cli, "RPCClient", FakeClient), mock.patch("builtins.print") as printed:
             self.assertEqual(cli.main(["cancel", "thread", "--data-dir", str(self.data_dir)]), 0)

@@ -33,6 +33,10 @@ def _parser() -> argparse.ArgumentParser:
     commands.add_parser("stop", help="gracefully stop the daemon")
     commands.add_parser("bridge", help="relay SSH transport (internal)")
     commands.add_parser("doctor", help="check daemon and provider availability")
+    update_parser = commands.add_parser("update", help="install the latest stable GitHub release")
+    update_parser.add_argument("--check", action="store_true", help="check for a release without installing")
+    update_parser.add_argument("--install-dir", type=Path, metavar="DIR",
+                               help="install as DIR/zeus-code instead of updating the current bundle")
 
     project = commands.add_parser("project", help="manage projects").add_subparsers(dest="project_command", required=True)
     project_add = project.add_parser("add", help="register a repository")
@@ -178,6 +182,12 @@ async def _background_serve(data_dir: Path) -> int:
 
 async def _run_async(args: argparse.Namespace) -> int:
     command = args.command
+    if command == "update":
+        if args.host:
+            raise ValueError("update is local-only; run it on the machine you want to update")
+        from .updater import update
+
+        return update(args.data_dir, check_only=args.check, install_dir=args.install_dir)
     if command == "serve":
         if args.host:
             raise ValueError("--host cannot be used with serve")
