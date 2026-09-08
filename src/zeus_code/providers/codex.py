@@ -330,6 +330,7 @@ class CodexProvider:
         server = self._connection()
         provider_thread_id: str | None = None
         turn_id: str | None = None
+        collab_started_at: dict[str, int | float] = {}
         try:
             await context.emit(
                 "status",
@@ -375,14 +376,24 @@ class CodexProvider:
 
             for message in pending:
                 done = await self._handle_message(
-                    server, context, message, provider_thread_id, turn_id
+                    server,
+                    context,
+                    message,
+                    provider_thread_id,
+                    turn_id,
+                    collab_started_at,
                 )
                 if done:
                     return
             while True:
                 message = await server.read()
                 if await self._handle_message(
-                    server, context, message, provider_thread_id, turn_id
+                    server,
+                    context,
+                    message,
+                    provider_thread_id,
+                    turn_id,
+                    collab_started_at,
                 ):
                     return
         except asyncio.CancelledError:
@@ -465,6 +476,7 @@ class CodexProvider:
         message: dict[str, Any],
         thread_id: str,
         turn_id: str,
+        collab_started_at: dict[str, int | float],
     ) -> bool:
         method = message.get("method")
         if isinstance(method, str) and "id" in message:
@@ -553,11 +565,25 @@ class CodexProvider:
             delta = params.get("delta")
             if isinstance(delta, str):
                 await context.emit("status", {"text": _clip(delta)})
-        elif method in {"item/started", "item/completed"}:
+        elif method in {"item/started", "item/updated", "item/completed"}:
             item = params.get("item")
             if isinstance(item, dict):
+                lifecycle = method.removeprefix("item/")
+                timestamp = params.get(
+                    {
+                        "started": "startedAtMs",
+                        "updated": "updatedAtMs",
+                        "completed": "completedAtMs",
+                    }[lifecycle]
+                )
+                if isinstance(timestamp, bool) or not isinstance(timestamp, (int, float)):
+                    timestamp = None
                 await self._emit_item(
-                    context, item, completed=method == "item/completed"
+                    context,
+                    item,
+                    lifecycle=lifecycle,
+                    timestamp=timestamp,
+                    collab_started_at=collab_started_at,
                 )
         elif method in {"warning", "configWarning"}:
             text = params.get("message", params.get("summary"))
@@ -590,12 +616,19 @@ class CodexProvider:
         return False
 
     async def _emit_item(
-        self, context: RunContext, item: dict[str, Any], *, completed: bool
+        self,
+        context: RunContext,
+        item: dict[str, Any],
+        *,
+        lifecycle: str,
+        timestamp: int | float | None,
+        collab_started_at: dict[str, int | float],
     ) -> None:
         item_type = item.get("type")
         item_id = item.get("id")
         if not isinstance(item_id, str) or not isinstance(item_type, str):
             return
+        completed = lifecycle == "completed"
         if item_type == "agentMessage":
             await context.emit(
                 "status",
@@ -638,9 +671,13 @@ class CodexProvider:
             "inProgress": "running",
             "completed": "completed",
             "failed": "failed",
+            "interrupted": "cancelled",
             "declined": "declined",
         }
-        status = status_aliases.get(raw_status, "completed" if completed else "running")
+        if isinstance(raw_status, str):
+            status = status_aliases.get(raw_status, raw_status)
+        else:
+            status = "completed" if completed else "running"
         event: dict[str, Any] = {
             "item_id": item_id,
             "tool_type": item_type,
@@ -649,7 +686,97 @@ class CodexProvider:
         }
         if text:
             event["text"] = text
+        if item_type == "collabAgentToolCall":
+            if lifecycle == "started" and timestamp is not None:
+                collab_started_at[item_id] = timestamp
+            started_at = collab_started_at.get(item_id)
+            event["agents"] = self._collab_agents(
+                item,
+                lifecycle=lifecycle,
+                timestamp=timestamp,
+                started_at=started_at,
+            )
+            if completed:
+                collab_started_at.pop(item_id, None)
         await context.emit("tool", event)
+
+    @staticmethod
+    def _collab_agents(
+        item: dict[str, Any],
+        *,
+        lifecycle: str,
+        timestamp: int | float | None,
+        started_at: int | float | None,
+    ) -> list[dict[str, Any]]:
+        raw_states = item.get("agentsStates")
+        states = raw_states if isinstance(raw_states, dict) else {}
+        raw_receivers = item.get("receiverThreadIds")
+        receivers = raw_receivers if isinstance(raw_receivers, list) else []
+        agent_ids: list[str] = []
+        for value in receivers:
+            if isinstance(value, str) and value and value not in agent_ids:
+                agent_ids.append(value)
+        for value in states:
+            if isinstance(value, str) and value and value not in agent_ids:
+                agent_ids.append(value)
+
+        tool = item.get("tool")
+        sender = item.get("senderThreadId")
+        prompt = item.get("prompt")
+        model = item.get("model")
+        starts_agent_work = tool in {
+            "spawnAgent",
+            "sendInput",
+            "resumeAgent",
+            "followupTask",
+        }
+        terminal_states = {
+            "completed",
+            "errored",
+            "interrupted",
+            "shutdown",
+            "notFound",
+            "failed",
+            "cancelled",
+        }
+        agents: list[dict[str, Any]] = []
+        for agent_id in agent_ids:
+            raw_state = states.get(agent_id)
+            if isinstance(raw_state, dict):
+                state = raw_state.get("status")
+                result = raw_state.get("message")
+            else:
+                state = raw_state if isinstance(raw_state, str) else None
+                result = None
+            # Agent-work start notifications can identify the receiver before
+            # agentsStates is populated, while explicitly beginning its lifecycle.
+            if (
+                not isinstance(state, str)
+                and lifecycle == "started"
+                and starts_agent_work
+            ):
+                state = "running"
+            agent: dict[str, Any] = {
+                "id": agent_id,
+                "state": state if isinstance(state, str) and state else "unknown",
+            }
+            if tool == "spawnAgent":
+                if isinstance(sender, str) and sender:
+                    agent["parent_id"] = sender
+                if isinstance(prompt, str) and prompt:
+                    agent["label"] = _clip(prompt, 2048)
+                if isinstance(model, str) and model:
+                    agent["model"] = model
+            if isinstance(result, str):
+                agent["result"] = _clip(result)
+            if starts_agent_work and started_at is not None:
+                agent["started_at"] = started_at
+            if lifecycle == "completed" and agent["state"] in terminal_states and timestamp is not None:
+                agent["finished_at"] = timestamp
+            if lifecycle == "updated" and timestamp is not None:
+                agent["updated_at"] = timestamp
+            agents.append(agent)
+        return agents
 
     def _tool_display(self, item_type: str, item: dict[str, Any]) -> tuple[str, str]:
         if item_type == "commandExecution":
@@ -857,8 +984,8 @@ class CodexProvider:
         text = output.decode("utf-8", errors="replace").strip()
         return text or "unknown"
 
-    async def _models(self, server: _AppServer) -> list[dict[str, str]]:
-        models: list[dict[str, str]] = []
+    async def _models(self, server: _AppServer) -> list[dict[str, Any]]:
+        models: list[dict[str, Any]] = []
         seen: set[str] = set()
         cursor: str | None = None
         for _ in range(10):
@@ -878,9 +1005,33 @@ class CodexProvider:
                 if not isinstance(model_id, str) or model_id in seen:
                     continue
                 name = row.get("displayName")
-                models.append(
-                    {"id": model_id, "name": name if isinstance(name, str) else model_id}
-                )
+                model: dict[str, Any] = {
+                    "id": model_id,
+                    "name": name if isinstance(name, str) else model_id,
+                }
+                efforts = row.get("supportedReasoningEfforts")
+                if isinstance(efforts, list):
+                    normalized: list[str] = []
+                    for option in efforts:
+                        effort = (
+                            option.get("reasoningEffort")
+                            if isinstance(option, dict)
+                            else option
+                        )
+                        if (
+                            isinstance(effort, str)
+                            and effort
+                            and effort not in normalized
+                        ):
+                            normalized.append(effort)
+                    model["reasoning_efforts"] = normalized
+                default_effort = row.get("defaultReasoningEffort")
+                if isinstance(default_effort, str) and default_effort:
+                    model["default_reasoning_effort"] = default_effort
+                is_default = row.get("isDefault")
+                if isinstance(is_default, bool):
+                    model["is_default"] = is_default
+                models.append(model)
                 seen.add(model_id)
             next_cursor = result.get("nextCursor")
             if not isinstance(next_cursor, str) or not next_cursor:

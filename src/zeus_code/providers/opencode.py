@@ -597,20 +597,35 @@ async def _body_chunks(
         yield chunk
 
 
-def _models(providers: Any, connected: set[str]) -> list[dict[str, str]]:
+def _models(providers: Any, connected: set[str]) -> list[dict[str, Any]]:
     if not isinstance(providers, dict):
         return []
-    output: list[dict[str, str]] = []
+    defaults = providers.get("default")
+    defaults = defaults if isinstance(defaults, dict) else {}
+    output: list[dict[str, Any]] = []
     for provider in providers.get("all", []):
         if not isinstance(provider, dict) or provider.get("id") not in connected:
             continue
         provider_id = str(provider["id"])
+        provider_default = defaults.get(provider_id)
         models = provider.get("models", {})
         if not isinstance(models, dict):
             continue
         for model_id, model in models.items():
             name = model.get("name", model_id) if isinstance(model, dict) else model_id
-            output.append({"id": f"{provider_id}/{model_id}", "name": str(name)})
+            entry: dict[str, Any] = {
+                "id": f"{provider_id}/{model_id}",
+                "name": str(name),
+            }
+            if isinstance(model, dict) and isinstance(model.get("variants"), dict):
+                variants: list[str] = []
+                for variant in model["variants"]:
+                    if isinstance(variant, str) and variant and variant not in variants:
+                        variants.append(variant)
+                entry["variants"] = variants
+            if isinstance(provider_default, str):
+                entry["is_default"] = provider_default == str(model_id)
+            output.append(entry)
     return sorted(output, key=lambda item: (item["name"].casefold(), item["id"]))
 
 

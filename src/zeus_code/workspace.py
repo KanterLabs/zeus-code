@@ -45,6 +45,7 @@ def _initial_state() -> dict[str, Any]:
                 "providers": {},
                 "events": {},
                 "runs": {},
+                "seen_threads": {},
                 "cursor": 0,
                 "server_id": None,
                 "last_error": None,
@@ -73,6 +74,19 @@ def _timestamp(value: Any) -> float | None:
         return parsed.timestamp()
     except (ValueError, OverflowError, OSError):
         return None
+
+
+def _is_attention_event(event: Mapping[str, Any]) -> bool:
+    """Return whether a durable event represents user-visible new work."""
+    kind = event.get("kind")
+    data = event.get("data") if isinstance(event.get("data"), dict) else {}
+    if kind in {"message", "message_delta"}:
+        return data.get("role", "assistant") in {"assistant", "agent"}
+    if kind == "run_state":
+        return data.get("state") in TERMINAL_RUN_STATES
+    if kind == "approval":
+        return data.get("approval_state", data.get("state", "pending")) == "pending"
+    return False
 
 
 class CacheStore:
@@ -116,6 +130,8 @@ class CacheStore:
             machine["stale"] = True
             machine.setdefault("events", {})
             machine.setdefault("runs", {})
+            if not isinstance(machine.get("seen_threads"), dict):
+                machine["seen_threads"] = {}
             machine.setdefault("snapshot", {"projects": [], "threads": [], "approvals": []})
             machine.setdefault("cursor", 0)
             machine.setdefault("server_id", machine.get("snapshot", {}).get("server_id"))
@@ -224,6 +240,7 @@ class Workspace:
             "providers": {},
             "events": {},
             "runs": {},
+            "seen_threads": {},
             "cursor": 0,
             "server_id": None,
             "last_error": None,
@@ -317,6 +334,121 @@ class Workspace:
 
     def pending_approval_count(self) -> int:
         return sum(len(self.approvals(machine_id)) for machine_id in self.machines)
+
+    def unread_count(self, machine_id: str, thread_id: str) -> int:
+        """Return distinct unread results newer than the server-scoped marker."""
+        machine = self.machines[machine_id]
+        server_id = machine.get("server_id")
+        marker = machine.get("seen_threads", {}).get(thread_id)
+        seen_seq = 0
+        if isinstance(marker, dict) and marker.get("server_id") == server_id:
+            try:
+                seen_seq = max(0, int(marker.get("seq", 0)))
+            except (TypeError, ValueError):
+                seen_seq = 0
+        results: set[tuple[str, str | int]] = set()
+        for event in machine.get("events", {}).get(thread_id, []):
+            try:
+                seq = int(event.get("seq", 0))
+            except (AttributeError, TypeError, ValueError):
+                continue
+            if seq <= seen_seq or not _is_attention_event(event):
+                continue
+            run_id = event.get("run_id")
+            if isinstance(run_id, str) and run_id:
+                results.add(("run", run_id))
+            else:
+                results.add(("seq", seq))
+        return len(results)
+
+    def mark_thread_seen(self, machine_id: str, thread_id: str, *, visible: bool) -> bool:
+        """Persist the live tail after the selected conversation was drawn.
+
+        Selection changes and synchronization deliberately never call this.
+        The caller supplies whether the conversation is actually visible (for
+        example, no overlay covers it), while the workspace independently
+        verifies the current selection and live-tail scroll position.
+        """
+        if not visible:
+            return False
+        if self.selected_machine_id != machine_id or self.state.get("selected_thread") != thread_id:
+            return False
+        if int(self.thread_view(thread_id, machine_id).get("scroll", 0)) != 0:
+            return False
+        machine = self.machines[machine_id]
+        server_id = machine.get("server_id")
+        if not isinstance(server_id, str) or not server_id:
+            return False
+        tail = 0
+        for event in machine.get("events", {}).get(thread_id, []):
+            try:
+                tail = max(tail, int(event.get("seq", 0)))
+            except (AttributeError, TypeError, ValueError):
+                continue
+        if tail <= 0:
+            return False
+        markers = machine.setdefault("seen_threads", {})
+        current = markers.get(thread_id)
+        try:
+            current_seq = int(current.get("seq", 0)) if isinstance(current, dict) else 0
+        except (TypeError, ValueError):
+            current_seq = 0
+        if (
+            isinstance(current, dict)
+            and current.get("server_id") == server_id
+            and current_seq >= tail
+        ):
+            return False
+        markers[thread_id] = {"server_id": server_id, "seq": tail}
+        # Advancing happens only after a successful draw and is infrequent
+        # because identical frames are rejected above, so make it crash-durable.
+        self._changed(force=True)
+        return True
+
+    def attention_items(self) -> list[dict[str, Any]]:
+        """Return unread threads and unresolved approvals across all machines."""
+        items: list[dict[str, Any]] = []
+        for machine_id, machine in self.machines.items():
+            projects = {project.get("id"): project for project in self.projects(machine_id)}
+            approval_threads = {
+                approval.get("thread_id")
+                for approval in self.approvals(machine_id)
+                if approval.get("thread_id")
+            }
+            for thread in self.threads(machine_id, include_archived=True):
+                thread_id = thread.get("id")
+                if not isinstance(thread_id, str) or not thread_id:
+                    continue
+                unread = self.unread_count(machine_id, thread_id)
+                needs_approval = thread_id in approval_threads
+                if unread == 0 and not needs_approval:
+                    continue
+                project = projects.get(thread.get("project_id"), {})
+                items.append(
+                    {
+                        "machine_id": machine_id,
+                        "thread_id": thread_id,
+                        "title": str(thread.get("title") or thread_id),
+                        "project_name": str(project.get("name") or ""),
+                        "machine_name": str(machine.get("alias") or machine_id),
+                        "state": str(thread.get("state") or "idle"),
+                        "unread_count": unread,
+                        "needs_approval": needs_approval,
+                        "stale": bool(machine.get("stale")),
+                    }
+                )
+        state_priority = {"failed": 0, "completed": 1, "cancelled": 2}
+        return sorted(
+            items,
+            key=lambda item: (
+                not item["needs_approval"],
+                state_priority.get(item["state"], 3),
+                -item["unread_count"],
+                item["machine_name"].casefold(),
+                item["project_name"].casefold(),
+                item["title"].casefold(),
+            ),
+        )
 
     def thread_events(self, thread_id: str | None = None, machine_id: str | None = None) -> list[dict[str, Any]]:
         machine = self.machines[machine_id or self.selected_machine_id]

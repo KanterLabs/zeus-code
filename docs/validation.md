@@ -1,5 +1,31 @@
 # v1 validation
 
+## v1.1.0 UX candidate
+
+September 8, 2026: the integrated local suite passes **252 Python tests** and
+**16 npm tests**. Model and agent integration fixtures use the installed
+Codex 0.153.4/OpenCode 1.18.26 contracts without paid model turns. They cover
+model capabilities, background discovery, persisted nested/concurrent child
+activity, unread markers, provider defaults and retained settings.
+
+`python3 scripts/e2e-ux.py` runs the actual curses client in a PTY against an
+isolated daemon at **48×16**, **80×24** and **120×35**. It covers empty, running,
+approval, failed and completed conversations; model/reasoning selection is
+checked in persisted state. Palette, attention and agent controls preserve the
+parent draft. ANSI captures are retained under `.work/ux-captures`; baseline
+v1.0.9 captures are under `.work/ux-before`. CI runs the same walkthrough against
+the built zipapp. The final packaged walkthrough and source/artifact lifecycle checks pass.
+A real retained v1.0.9 daemon also keeps its PID, active row, draft and model
+through a v1.1.0 client update, with a verified backup and working RPC diff.
+The Python 3.13+ shutdown socket race has a deterministic regression.
+GitHub publication and post-release verification are tracked in **ZC-27**.
+
+Updater fixtures retain a live process and populated SQLite state while
+switching a client launcher. They verify lazy imports from the old archive,
+unchanged active rows, backup integrity, protocol/schema compatibility,
+custom command names and safe deferral for a legacy archive still in use.
+No user database is reset or restored.
+
 ## v1.0.3 self-update
 
 September 8, 2026: the Linux candidate passed **178 tests**, including release

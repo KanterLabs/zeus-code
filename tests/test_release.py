@@ -76,7 +76,7 @@ class ReleaseTests(unittest.TestCase):
         root = self.base / "source"
         package = root / "src/zeus_code"
         package.mkdir(parents=True)
-        (package / "__init__.py").write_text('__version__ = "1.2.3"\n', encoding="utf-8")
+        (package / "__init__.py").write_text('__version__ = "1.2.3"\nPROTOCOL_VERSION = 1\n', encoding="utf-8")
         (package / "storage.py").write_text("SCHEMA_VERSION = 7\n", encoding="utf-8")
         (package / "cli.py").write_text(
             "from . import __version__\n"
@@ -97,6 +97,7 @@ class ReleaseTests(unittest.TestCase):
             json.dumps(
                 {
                     "python_requires": "3.11",
+                    "protocol_version": 1,
                     "schema_version": 7,
                     "version": "1.2.3",
                 },
@@ -149,6 +150,7 @@ class ReleaseTests(unittest.TestCase):
         self.assertEqual(
             {
                 "python_requires": "3.11",
+                    "protocol_version": 1,
                 "schema_version": 7,
                 "version": "1.2.3",
             },
@@ -173,6 +175,7 @@ class ReleaseTests(unittest.TestCase):
             json.dumps(
                 {
                     "python_requires": "3.11",
+                    "protocol_version": 1,
                     "schema_version": True,
                     "version": "1.2.3",
                 },
@@ -242,9 +245,9 @@ class ReleaseTests(unittest.TestCase):
     def test_release_body_documents_update_and_manual_bootstrap(self) -> None:
         body = release.release_body()
         self.assertIn("zeus-code update --check", body)
-        self.assertIn("zeus-code stop", body)
+        self.assertNotIn("zeus-code stop", body)
         self.assertIn("zeus-code update", body)
-        self.assertIn("keep the existing executable", body)
+        self.assertIn("retain immutable runtimes", body)
         self.assertIn("sha256sum -c SHA256SUMS", body)
 
 

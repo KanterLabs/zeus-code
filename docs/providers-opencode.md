@@ -79,3 +79,10 @@ no provider is connected, OpenCode is reported unavailable with an actionable
 detail; this result is isolated to OpenCode and does not disable other provider
 adapters. OpenCode documents credential setup through
 [`opencode auth login`](https://opencode.ai/docs/cli/#auth).
+
+## Model capabilities in v1.1
+
+Connected model entries retain provider-reported variant names for the terminal
+picker. Zeus does not synthesize a Codex-style reasoning list for OpenCode.
+Automatic child-agent records are currently normalized from Codex collaboration
+items; OpenCode tool events remain visible through the ordinary transcript.

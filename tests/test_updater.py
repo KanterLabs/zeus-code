@@ -1,20 +1,23 @@
 from __future__ import annotations
 
-from contextlib import redirect_stdout
+from contextlib import contextmanager, redirect_stdout
 import fcntl
 import hashlib
 import io
 import json
 import os
 from pathlib import Path
+import select
 import sqlite3
+import subprocess
+import sys
 import tempfile
 import unittest
 from unittest import mock
 import urllib.error
 import zipfile
 
-from zeus_code import updater
+from zeus_code import PROTOCOL_VERSION, updater
 from zeus_code.storage import SCHEMA_VERSION
 
 
@@ -23,7 +26,13 @@ SUMS_URL = "https://downloads.example/SHA256SUMS"
 METADATA_URL = "https://downloads.example/release.json"
 
 
-def zipapp(version: str, *, schema_version: int = SCHEMA_VERSION, include_cli: bool = True) -> bytes:
+def zipapp(
+    version: str,
+    *,
+    schema_version: int = SCHEMA_VERSION,
+    protocol_version: int = PROTOCOL_VERSION,
+    include_cli: bool = True,
+) -> bytes:
     output = io.BytesIO()
     with zipfile.ZipFile(output, "w", compression=zipfile.ZIP_DEFLATED) as archive:
         archive.writestr(
@@ -32,7 +41,7 @@ def zipapp(version: str, *, schema_version: int = SCHEMA_VERSION, include_cli: b
         )
         archive.writestr(
             "zeus_code/__init__.py",
-            f'__version__ = "{version}"\nPROTOCOL_VERSION = 1\n',
+            f'__version__ = "{version}"\nPROTOCOL_VERSION = {protocol_version}\n',
         )
         if include_cli:
             archive.writestr("zeus_code/cli.py", "def main():\n    return 0\n")
@@ -40,6 +49,61 @@ def zipapp(version: str, *, schema_version: int = SCHEMA_VERSION, include_cli: b
             "zeus_code/storage.py",
             f"SCHEMA_VERSION = {schema_version}\n",
         )
+    return output.getvalue()
+
+
+def daemon_zipapp(
+    version: str,
+    *,
+    schema_version: int = SCHEMA_VERSION,
+    protocol_version: int = PROTOCOL_VERSION,
+) -> bytes:
+    output = io.BytesIO()
+    main = f'''# zeus_code.cli fixture entrypoint
+import fcntl
+import json
+import os
+from pathlib import Path
+import sqlite3
+import sys
+
+data_dir = Path(sys.argv[1])
+data_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+lock = os.open(data_dir / "server.lock", os.O_CREAT | os.O_RDWR, 0o600)
+fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+database = sqlite3.connect(data_dir / "state.sqlite3")
+database.execute("PRAGMA user_version = {schema_version}")
+database.execute("CREATE TABLE IF NOT EXISTS records (id TEXT PRIMARY KEY, value TEXT)")
+database.execute("CREATE TABLE IF NOT EXISTS runs (id TEXT PRIMARY KEY, state TEXT)")
+database.execute("INSERT OR REPLACE INTO records VALUES ('record-1', 'preserve me')")
+database.execute("INSERT OR REPLACE INTO runs VALUES ('run-1', 'running')")
+database.commit()
+(data_dir / "server.json").write_text(json.dumps({{
+    "pid": os.getpid(),
+    "protocol_version": {protocol_version},
+    "server_id": "fixture-server",
+    "version": {version!r},
+}}) + "\\n")
+print(json.dumps({{"pid": os.getpid()}}), flush=True)
+for command in sys.stdin:
+    if command.strip() == "probe":
+        import lazy_probe
+        print(lazy_probe.VALUE, flush=True)
+    elif command.strip() == "stop":
+        break
+database.close()
+fcntl.flock(lock, fcntl.LOCK_UN)
+os.close(lock)
+'''
+    with zipfile.ZipFile(output, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("__main__.py", main)
+        archive.writestr(
+            "zeus_code/__init__.py",
+            f'__version__ = "{version}"\nPROTOCOL_VERSION = {protocol_version}\n',
+        )
+        archive.writestr("zeus_code/cli.py", "def main():\n    return 0\n")
+        archive.writestr("zeus_code/storage.py", f"SCHEMA_VERSION = {schema_version}\n")
+        archive.writestr("lazy_probe.py", f"VALUE = 'lazy runtime {version}'\n")
     return output.getvalue()
 
 
@@ -51,17 +115,21 @@ class FakeRelease:
         artifact_version: str | None = None,
         metadata_version: str | None = None,
         metadata_schema: int = SCHEMA_VERSION,
+        metadata_protocol: int = PROTOCOL_VERSION,
         artifact_schema: int = SCHEMA_VERSION,
+        artifact_protocol: int = PROTOCOL_VERSION,
         artifact: bytes | None = None,
     ) -> None:
         artifact = artifact or zipapp(
             artifact_version or version,
             schema_version=artifact_schema,
+            protocol_version=artifact_protocol,
         )
         metadata = json.dumps(
             {
                 "version": metadata_version or version,
                 "schema_version": metadata_schema,
+                "protocol_version": metadata_protocol,
                 "python_requires": "3.11",
             },
             sort_keys=True,
@@ -127,15 +195,79 @@ class UpdaterTests(unittest.TestCase):
                 )
         return result, output.getvalue()
 
+    def managed_runtime(self, target: Path | None = None) -> Path:
+        inspected = updater._inspect_target(target or self.target)
+        self.assertEqual("managed", inspected.kind)
+        self.assertIsNotNone(inspected.runtime)
+        assert inspected.runtime is not None
+        return inspected.runtime
+
+    @contextmanager
+    def running_daemon(self, runtime: Path):
+        process = subprocess.Popen(
+            [sys.executable, str(runtime), str(self.data_dir)],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+        )
+        assert process.stdout is not None
+        ready, _, _ = select.select([process.stdout], [], [], 5.0)
+        if not ready:
+            process.terminate()
+            process.wait(timeout=5)
+            self.fail("fixture daemon did not become ready")
+        line = process.stdout.readline()
+        if process.poll() is not None:
+            self.fail(f"fixture daemon exited during startup: {line}")
+        metadata = json.loads(line)
+        try:
+            yield process, metadata
+        finally:
+            if process.poll() is None:
+                assert process.stdin is not None
+                try:
+                    process.stdin.write("stop\n")
+                    process.stdin.flush()
+                    process.wait(timeout=5)
+                except (BrokenPipeError, subprocess.TimeoutExpired):
+                    process.terminate()
+                    process.wait(timeout=5)
+            if process.stdin is not None:
+                process.stdin.close()
+            if process.stdout is not None:
+                process.stdout.close()
+
+    def probe_daemon(self, process: subprocess.Popen[str]) -> str:
+        assert process.stdin is not None
+        assert process.stdout is not None
+        process.stdin.write("probe\n")
+        process.stdin.flush()
+        ready, _, _ = select.select([process.stdout], [], [], 5.0)
+        self.assertTrue(ready, "fixture daemon did not answer lazy-load probe")
+        return process.stdout.readline().strip()
+
     def test_installs_latest_release_to_path_with_spaces(self) -> None:
         release = FakeRelease("1.1.0")
 
         result, output = self.run_update(release)
 
         self.assertEqual(0, result)
-        self.assertEqual(release.values[ARTIFACT_URL], self.target.read_bytes())
+        runtime = self.managed_runtime()
+        self.assertEqual(release.values[ARTIFACT_URL], runtime.read_bytes())
+        self.assertNotEqual(release.values[ARTIFACT_URL], self.target.read_bytes())
         self.assertTrue(self.target.stat().st_mode & 0o111)
+        launched = subprocess.run(
+            [str(self.target)],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+            check=False,
+        )
+        self.assertEqual(b"", launched.stderr)
+        self.assertEqual(0, launched.returncode)
         self.assertIn("Installed Zeus Code 1.1.0", output)
+        self.assertIn(f"Immutable runtime: {runtime}", output)
         self.assertIn(f"Add {self.install_dir} to PATH", output)
         self.assertFalse((self.data_dir / "state.sqlite3").exists())
         self.assertEqual(
@@ -157,20 +289,43 @@ class UpdaterTests(unittest.TestCase):
         self.assertFalse(self.data_dir.exists())
         self.assertEqual([updater.LATEST_RELEASE_URL], release.calls)
 
-    def test_up_to_date_and_newer_installs_do_not_download_assets(self) -> None:
-        for installed, latest, phrase in (
-            ("1.1.0", "1.1.0", "up to date"),
-            ("2.0.0", "1.1.0", "refusing to downgrade"),
-        ):
-            with self.subTest(installed=installed, latest=latest):
-                self.target.write_bytes(zipapp(installed))
-                original = self.target.read_bytes()
-                release = FakeRelease(latest)
-                result, output = self.run_update(release)
-                self.assertEqual(0, result)
-                self.assertIn(phrase, output)
-                self.assertEqual(original, self.target.read_bytes())
-                self.assertEqual([updater.LATEST_RELEASE_URL], release.calls)
+    def test_managed_up_to_date_and_newer_bundle_do_not_download_assets(self) -> None:
+        installed = FakeRelease("1.1.0")
+        self.run_update(installed)
+        current_launcher = self.target.read_bytes()
+
+        same = FakeRelease("1.1.0")
+        result, output = self.run_update(same)
+
+        self.assertEqual(0, result)
+        self.assertIn("up to date", output)
+        self.assertEqual(current_launcher, self.target.read_bytes())
+        self.assertEqual([updater.LATEST_RELEASE_URL], same.calls)
+
+        newer = zipapp("2.0.0")
+        self.target.unlink()
+        self.target.write_bytes(newer)
+        older_release = FakeRelease("1.1.0")
+        result, output = self.run_update(older_release)
+        self.assertEqual(0, result)
+        self.assertIn("refusing to downgrade", output)
+        self.assertEqual(newer, self.target.read_bytes())
+        self.assertEqual([updater.LATEST_RELEASE_URL], older_release.calls)
+
+    def test_current_legacy_zipapp_migrates_to_managed_launcher(self) -> None:
+        old = zipapp("1.1.0")
+        self.target.write_bytes(old)
+        release = FakeRelease("1.1.0", artifact=old)
+
+        result, output = self.run_update(release)
+
+        self.assertEqual(0, result)
+        self.assertEqual(old, self.managed_runtime().read_bytes())
+        self.assertIn("Installed Zeus Code 1.1.0", output)
+        self.assertEqual(
+            [updater.LATEST_RELEASE_URL, SUMS_URL, METADATA_URL, ARTIFACT_URL],
+            release.calls,
+        )
 
     def test_corrupt_or_incomplete_downloads_preserve_existing_executable(self) -> None:
         cases: list[tuple[str, callable]] = [
@@ -218,7 +373,10 @@ class UpdaterTests(unittest.TestCase):
 
         installed = home / ".local/bin/zeus-code"
         self.assertEqual(0, result)
-        self.assertEqual(release.values[ARTIFACT_URL], installed.read_bytes())
+        self.assertEqual(
+            release.values[ARTIFACT_URL],
+            self.managed_runtime(installed).read_bytes(),
+        )
         self.assertEqual(original, checkout_launcher.read_bytes())
         self.assertIn("Add", output.getvalue())
         self.assertIn("to PATH", output.getvalue())
@@ -236,10 +394,71 @@ class UpdaterTests(unittest.TestCase):
                 result = updater.update(self.data_dir)
 
         self.assertEqual(0, result)
-        self.assertEqual(release.values[ARTIFACT_URL], running.read_bytes())
+        new_runtime = self.managed_runtime(running)
+        self.assertEqual(release.values[ARTIFACT_URL], new_runtime.read_bytes())
         backups = list(self.root.glob("renamed zeus executable.rollback-1.0.0*"))
         self.assertEqual(1, len(backups))
         self.assertEqual(old, backups[0].read_bytes())
+        old_digest = hashlib.sha256(old).hexdigest()
+        retained = self.root / updater._RUNTIME_DIRECTORY / old_digest / "zeus-code.pyz"
+        self.assertEqual(old, retained.read_bytes())
+
+    def test_custom_command_name_remains_update_target_through_launcher(self) -> None:
+        custom = self.root / "zeus-custom"
+        custom.write_bytes(zipapp("1.0.0"))
+        first = FakeRelease("1.1.0")
+        output = io.StringIO()
+        with mock.patch.object(updater, "_open_url", side_effect=first.open), mock.patch.object(
+            updater.sys, "argv", [str(custom), "update"]
+        ):
+            with redirect_stdout(output):
+                updater.update(self.data_dir)
+        first_launcher = custom.read_bytes()
+        first_target = updater._inspect_target(custom)
+        self.assertEqual("managed", first_target.kind)
+        assert first_target.runtime is not None
+
+        second = FakeRelease("1.2.0")
+        with mock.patch.object(updater, "_open_url", side_effect=second.open), mock.patch.dict(
+            os.environ,
+            {"ZEUS_CODE_INSTALL_TARGET": str(custom)},
+            clear=False,
+        ), mock.patch.object(updater.sys, "argv", [str(first_target.runtime), "update"]):
+            with redirect_stdout(output):
+                updater.update(self.data_dir)
+
+        self.assertNotEqual(first_launcher, custom.read_bytes())
+        self.assertEqual("1.2.0", updater._inspect_target(custom).version)
+        self.assertFalse(self.target.exists())
+
+    def test_direct_content_addressed_pyz_installs_standalone_command(self) -> None:
+        home = self.root / "home"
+        runtime = (
+            home
+            / ".local/share/zeus-code/runtimes"
+            / ("a" * 64)
+            / "zeus-code.pyz"
+        )
+        runtime.parent.mkdir(parents=True)
+        old = zipapp("1.0.0")
+        runtime.write_bytes(old)
+        release = FakeRelease("1.1.0")
+        output = io.StringIO()
+        with mock.patch.object(updater, "_open_url", side_effect=release.open), mock.patch.object(
+            updater.sys, "argv", [str(runtime), "update"]
+        ), mock.patch.dict(
+            os.environ,
+            {"HOME": str(home), "PATH": "/usr/bin"},
+            clear=False,
+        ):
+            with redirect_stdout(output):
+                result = updater.update(self.data_dir)
+
+        installed = home / ".local/bin/zeus-code"
+        self.assertEqual(0, result)
+        self.assertEqual(old, runtime.read_bytes())
+        self.assertEqual("managed", updater._inspect_target(installed).kind)
+        self.assertIn(f"Installed Zeus Code 1.1.0 at {installed}", output.getvalue())
 
     def test_refuses_unknown_target_without_using_network(self) -> None:
         self.target.write_text("#!/bin/sh\necho unrelated\n")
@@ -250,6 +469,65 @@ class UpdaterTests(unittest.TestCase):
 
         self.assertEqual([], release.calls)
         self.assertEqual("#!/bin/sh\necho unrelated\n", self.target.read_text())
+
+    def test_refuses_symbolic_link_target_without_using_network(self) -> None:
+        destination = self.root / "real-zeus-code"
+        original = zipapp("1.0.0")
+        destination.write_bytes(original)
+        self.target.symlink_to(destination)
+        release = FakeRelease("1.1.0")
+
+        with self.assertRaisesRegex(RuntimeError, "symbolic-link update target"):
+            self.run_update(release)
+
+        self.assertTrue(self.target.is_symlink())
+        self.assertEqual(original, destination.read_bytes())
+        self.assertEqual([], release.calls)
+
+    def test_refuses_symbolic_link_from_launcher_environment(self) -> None:
+        destination = self.root / "managed-destination"
+        destination.write_bytes(zipapp("1.0.0"))
+        link = self.root / "public-command"
+        link.symlink_to(destination)
+        release = FakeRelease("1.1.0")
+
+        with mock.patch.dict(
+            os.environ,
+            {"ZEUS_CODE_INSTALL_TARGET": str(link)},
+            clear=False,
+        ), mock.patch.object(updater, "_open_url", side_effect=release.open):
+            with self.assertRaisesRegex(RuntimeError, "symbolic-link update target"):
+                updater.update(self.data_dir)
+
+        self.assertTrue(link.is_symlink())
+        self.assertEqual([], release.calls)
+
+    def test_refuses_symbolic_link_runtime_root(self) -> None:
+        destination = self.root / "external-runtimes"
+        destination.mkdir()
+        (self.install_dir / updater._RUNTIME_DIRECTORY).symlink_to(destination)
+        release = FakeRelease("1.1.0")
+
+        with self.assertRaisesRegex(RuntimeError, "symbolic link|symbolic-link"):
+            self.run_update(release)
+
+        self.assertFalse(self.target.exists())
+        self.assertEqual([], list(destination.iterdir()))
+
+    def test_concurrent_update_lock_serializes_target_switch(self) -> None:
+        old = zipapp("1.0.0")
+        self.target.write_bytes(old)
+        lock_path = self.install_dir / ".zeus-code.update.lock"
+        descriptor = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
+        fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        try:
+            with self.assertRaisesRegex(RuntimeError, "Another Zeus Code update"):
+                self.run_update(FakeRelease("1.1.0"))
+        finally:
+            fcntl.flock(descriptor, fcntl.LOCK_UN)
+            os.close(descriptor)
+
+        self.assertEqual(old, self.target.read_bytes())
 
     def test_refuses_launcher_in_a_different_source_checkout(self) -> None:
         checkout = self.root / "different checkout"
@@ -265,28 +543,151 @@ class UpdaterTests(unittest.TestCase):
         self.assertEqual("from zeus_code.cli import main\n", launcher.read_text())
         self.assertEqual([], release.calls)
 
-    def test_active_daemon_lock_refuses_update_with_data_dir_command(self) -> None:
+    def test_active_daemon_from_other_runtime_survives_update_with_state(self) -> None:
         old = zipapp("1.0.0")
         self.target.write_bytes(old)
-        self.data_dir.mkdir()
-        lock_path = self.data_dir / "server.lock"
-        descriptor = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
-        fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        daemon_runtime = self.root / "daemon-runtime.pyz"
+        daemon_runtime.write_bytes(daemon_zipapp("1.0.0"))
         release = FakeRelease("1.1.0")
-        try:
-            with self.assertRaises(RuntimeError) as raised:
-                self.run_update(release)
-        finally:
-            fcntl.flock(descriptor, fcntl.LOCK_UN)
-            os.close(descriptor)
 
-        message = str(raised.exception)
-        self.assertIn("Stop the daemon", message)
-        self.assertIn("--data-dir", message)
-        self.assertIn(str(self.data_dir), message)
-        self.assertIn("Active provider work was left running", message)
-        self.assertEqual(old, self.target.read_bytes())
+        with self.running_daemon(daemon_runtime) as (process, ready):
+            result, output = self.run_update(release)
+
+            self.assertEqual(0, result)
+            self.assertEqual(ready["pid"], process.pid)
+            self.assertIsNone(process.poll())
+            self.assertEqual("lazy runtime 1.0.0", self.probe_daemon(process))
+            server = json.loads((self.data_dir / "server.json").read_text())
+            self.assertEqual(process.pid, server["pid"])
+            database = sqlite3.connect(self.data_dir / "state.sqlite3")
+            self.assertEqual(
+                ("preserve me",),
+                database.execute(
+                    "SELECT value FROM records WHERE id = 'record-1'"
+                ).fetchone(),
+            )
+            self.assertEqual(
+                ("running",),
+                database.execute("SELECT state FROM runs WHERE id = 'run-1'").fetchone(),
+            )
+            database.close()
+            self.assertEqual(release.values[ARTIFACT_URL], self.managed_runtime().read_bytes())
+            self.assertIn("Installed Zeus Code 1.1.0", output)
+
+        backups = list((self.data_dir / "backups").glob("state-before-1.1.0-*.sqlite3"))
+        self.assertEqual(1, len(backups))
+        backup = sqlite3.connect(backups[0])
+        self.assertEqual(
+            ("running",),
+            backup.execute("SELECT state FROM runs WHERE id = 'run-1'").fetchone(),
+        )
+        backup.close()
+
+    def test_active_daemon_from_managed_runtime_survives_launcher_switch(self) -> None:
+        old_artifact = daemon_zipapp("1.0.0")
+        self.run_update(FakeRelease("1.0.0", artifact=old_artifact))
+        old_runtime = self.managed_runtime()
+        old_launcher = self.target.read_bytes()
+        release = FakeRelease("1.1.0")
+
+        with self.running_daemon(self.target) as (process, ready):
+            result, output = self.run_update(release)
+
+            self.assertEqual(0, result)
+            self.assertEqual(ready["pid"], process.pid)
+            self.assertIsNone(process.poll())
+            self.assertEqual("lazy runtime 1.0.0", self.probe_daemon(process))
+            self.assertEqual(old_artifact, old_runtime.read_bytes())
+            self.assertEqual(release.values[ARTIFACT_URL], self.managed_runtime().read_bytes())
+            self.assertIn("Installed Zeus Code 1.1.0", output)
+
+        rollback = list(self.install_dir.glob("zeus-code.rollback-1.0.0*"))
+        self.assertEqual(1, len(rollback))
+        self.assertEqual(old_launcher, rollback[0].read_bytes())
+
+    def test_fresh_install_dir_does_not_disturb_active_daemon(self) -> None:
+        daemon_runtime = self.root / "daemon-runtime.pyz"
+        daemon_runtime.write_bytes(daemon_zipapp("1.0.0"))
+        release = FakeRelease("1.1.0")
+
+        with self.running_daemon(daemon_runtime) as (process, _):
+            result, output = self.run_update(release)
+
+            self.assertEqual(0, result)
+            self.assertIsNone(process.poll())
+            self.assertEqual("lazy runtime 1.0.0", self.probe_daemon(process))
+            self.assertEqual(release.values[ARTIFACT_URL], self.managed_runtime().read_bytes())
+            self.assertIn("Installed Zeus Code 1.1.0", output)
+
+    def test_incompatible_active_daemon_defers_client_switch(self) -> None:
+        daemon_runtime = self.root / "daemon-runtime.pyz"
+        daemon_runtime.write_bytes(
+            daemon_zipapp("0.9.0", protocol_version=PROTOCOL_VERSION + 1)
+        )
+        release = FakeRelease("1.1.0")
+
+        with self.running_daemon(daemon_runtime) as (process, _):
+            result, output = self.run_update(release)
+
+            self.assertEqual(0, result)
+            self.assertIsNone(process.poll())
+            self.assertFalse(self.target.exists())
+            self.assertIn("executable switch is deferred", output)
+            self.assertIn("cannot connect to the current daemon protocol", output)
+            self.assertNotIn("verified new runtime is usable now", output)
+            self.assertEqual("lazy runtime 0.9.0", self.probe_daemon(process))
+
+    def test_exact_live_legacy_zipapp_is_retained_and_switch_is_deferred(self) -> None:
+        old = daemon_zipapp("1.0.0")
+        self.target.write_bytes(old)
+        release = FakeRelease("1.1.0")
+
+        with self.running_daemon(self.target) as (process, ready):
+            result, output = self.run_update(release)
+
+            self.assertEqual(0, result)
+            self.assertEqual(old, self.target.read_bytes())
+            self.assertEqual(ready["pid"], process.pid)
+            self.assertIsNone(process.poll())
+            self.assertEqual("lazy runtime 1.0.0", self.probe_daemon(process))
+            database = sqlite3.connect(self.data_dir / "state.sqlite3")
+            self.assertEqual(
+                ("running",),
+                database.execute("SELECT state FROM runs WHERE id = 'run-1'").fetchone(),
+            )
+            database.close()
+            self.assertIn("executable switch is deferred", output)
+            self.assertIn("active local and remote provider work was left running", output)
+            self.assertIn("verified new runtime is usable now", output)
+            new_digest = hashlib.sha256(release.values[ARTIFACT_URL]).hexdigest()
+            new_runtime = (
+                self.install_dir
+                / updater._RUNTIME_DIRECTORY
+                / new_digest
+                / "zeus-code.pyz"
+            )
+            self.assertEqual(release.values[ARTIFACT_URL], new_runtime.read_bytes())
+            old_digest = hashlib.sha256(old).hexdigest()
+            retained = (
+                self.install_dir
+                / updater._RUNTIME_DIRECTORY
+                / old_digest
+                / "zeus-code.pyz"
+            )
+            self.assertEqual(old, retained.read_bytes())
+
+        backups = list((self.data_dir / "backups").glob("state-before-1.1.0-*.sqlite3"))
+        self.assertEqual(1, len(backups))
         self.assertEqual([], list(self.install_dir.glob("zeus-code.rollback-*")))
+
+        resumed = FakeRelease("1.1.0")
+        result, output = self.run_update(resumed)
+        self.assertEqual(0, result)
+        self.assertEqual(resumed.values[ARTIFACT_URL], self.managed_runtime().read_bytes())
+        self.assertIn("Installed Zeus Code 1.1.0", output)
+        rollback = list(self.install_dir.glob("zeus-code.rollback-1.0.0*"))
+        self.assertEqual(1, len(rollback))
+        self.assertEqual(old, rollback[0].read_bytes())
 
     def test_populated_database_and_old_executable_get_unique_verified_backups(self) -> None:
         old = zipapp("1.0.0")
@@ -305,7 +706,7 @@ class UpdaterTests(unittest.TestCase):
         result, output = self.run_update(release)
 
         self.assertEqual(0, result)
-        self.assertEqual(release.values[ARTIFACT_URL], self.target.read_bytes())
+        self.assertEqual(release.values[ARTIFACT_URL], self.managed_runtime().read_bytes())
         self.assertEqual(b"older rollback", occupied.read_bytes())
         rollback = self.install_dir / "zeus-code.rollback-1.0.0.1"
         self.assertEqual(old, rollback.read_bytes())
@@ -321,17 +722,34 @@ class UpdaterTests(unittest.TestCase):
         original.close()
         self.assertIn("Verified state database backup", output)
 
-    def test_wrong_manifest_or_embedded_schema_is_rejected_before_replacement(self) -> None:
-        for name, release in (
-            ("manifest", FakeRelease("1.1.0", metadata_schema=SCHEMA_VERSION + 1)),
-            ("artifact", FakeRelease("1.1.0", artifact_schema=SCHEMA_VERSION + 1)),
+    def test_wrong_manifest_or_embedded_compatibility_is_rejected(self) -> None:
+        for name, release, phrase in (
+            (
+                "manifest schema",
+                FakeRelease("1.1.0", metadata_schema=SCHEMA_VERSION + 1),
+                "schema version",
+            ),
+            (
+                "manifest protocol",
+                FakeRelease("1.1.0", metadata_protocol=PROTOCOL_VERSION + 1),
+                "protocol version",
+            ),
+            (
+                "artifact schema",
+                FakeRelease("1.1.0", artifact_schema=SCHEMA_VERSION + 1),
+                "schema version",
+            ),
+            (
+                "artifact protocol",
+                FakeRelease("1.1.0", artifact_protocol=PROTOCOL_VERSION + 1),
+                "protocol version",
+            ),
         ):
             with self.subTest(name=name):
                 old = zipapp("1.0.0")
                 self.target.write_bytes(old)
-                with self.assertRaisesRegex(RuntimeError, "schema version") as raised:
+                with self.assertRaisesRegex(RuntimeError, phrase) as raised:
                     self.run_update(release)
-                self.assertIn("manual upgrade", str(raised.exception))
                 self.assertIn("rollback compatibility", str(raised.exception))
                 self.assertEqual(old, self.target.read_bytes())
 
@@ -392,6 +810,26 @@ class UpdaterTests(unittest.TestCase):
             self.run_update(release)
 
         self.assertEqual(old, self.target.read_bytes())
+
+    def test_symbolic_link_backup_directory_is_rejected(self) -> None:
+        old = zipapp("1.0.0")
+        self.target.write_bytes(old)
+        self.data_dir.mkdir()
+        database = sqlite3.connect(self.data_dir / "state.sqlite3")
+        database.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+        database.execute("CREATE TABLE records(value TEXT)")
+        database.execute("INSERT INTO records VALUES ('untouched')")
+        database.commit()
+        database.close()
+        external = self.root / "external-backups"
+        external.mkdir()
+        (self.data_dir / "backups").symlink_to(external)
+
+        with self.assertRaisesRegex(RuntimeError, "backup directory is a symbolic link"):
+            self.run_update(FakeRelease("1.1.0"))
+
+        self.assertEqual(old, self.target.read_bytes())
+        self.assertEqual([], list(external.iterdir()))
 
 
 if __name__ == "__main__":

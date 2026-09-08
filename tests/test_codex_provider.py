@@ -75,11 +75,24 @@ for raw in sys.stdin:
     elif method == "model/list":
         if message["params"].get("cursor"):
             send({"id": message["id"], "result": {"data": [{
-                "id": "gpt-second", "model": "gpt-second", "displayName": "Second"
+                "id": "gpt-second", "model": "gpt-second", "displayName": "Second",
+                "description": "Second fixture model", "hidden": False,
+                "isDefault": False, "defaultReasoningEffort": "high",
+                "supportedReasoningEfforts": [
+                    {"reasoningEffort": "medium", "description": "Balanced"},
+                    {"reasoningEffort": "high", "description": "More reasoning"},
+                ],
             }], "nextCursor": None}})
         else:
             send({"id": message["id"], "result": {"data": [{
-                "id": "gpt-first", "model": "gpt-first", "displayName": "First"
+                "id": "gpt-first", "model": "gpt-first", "displayName": "First",
+                "description": "First fixture model", "hidden": False,
+                "isDefault": True, "defaultReasoningEffort": "medium",
+                "supportedReasoningEfforts": [
+                    {"reasoningEffort": "low", "description": "Fast"},
+                    {"reasoningEffort": "medium", "description": "Balanced"},
+                    {"reasoningEffort": "high", "description": "More reasoning"},
+                ],
             }], "nextCursor": "page-two"}})
     elif method == "thread/start":
         thread_id = "thread-new"
@@ -161,6 +174,115 @@ for raw in sys.stdin:
             send({"method": "item/completed", "params": {
                 "threadId": thread_id, "turnId": turn_id, "completedAtMs": 6,
                 "item": {"type": "agentMessage", "id": "long-message", "text": text},
+            }})
+            send({"method": "turn/completed", "params": {
+                "threadId": thread_id,
+                "turn": {"id": turn_id, "status": "completed", "items": []},
+            }})
+        elif prompt == "agents":
+            send({"method": "item/started", "params": {
+                "threadId": thread_id, "turnId": turn_id, "startedAtMs": 1000,
+                "item": {
+                    "type": "collabAgentToolCall", "id": "spawn-a",
+                    "tool": "spawnAgent", "status": "inProgress",
+                    "senderThreadId": thread_id, "receiverThreadIds": [],
+                    "prompt": "Inspect the parser", "model": "gpt-5.6-sol",
+                    "reasoningEffort": "high", "agentsStates": {},
+                },
+            }})
+            send({"method": "item/completed", "params": {
+                "threadId": thread_id, "turnId": turn_id, "completedAtMs": 1100,
+                "item": {
+                    "type": "collabAgentToolCall", "id": "spawn-a",
+                    "tool": "spawnAgent", "status": "completed",
+                    "senderThreadId": thread_id,
+                    "receiverThreadIds": ["agent-a"],
+                    "prompt": "Inspect the parser", "model": "gpt-5.6-sol",
+                    "reasoningEffort": "high",
+                    "agentsStates": {"agent-a": {"status": "running"}},
+                },
+            }})
+            send({"method": "item/started", "params": {
+                "threadId": thread_id, "turnId": turn_id, "startedAtMs": 1200,
+                "item": {
+                    "type": "collabAgentToolCall", "id": "spawn-b",
+                    "tool": "spawnAgent", "status": "inProgress",
+                    "senderThreadId": "agent-a", "receiverThreadIds": [],
+                    "prompt": "Validate nested behavior", "model": "gpt-5.6-luna",
+                    "reasoningEffort": "medium", "agentsStates": {},
+                },
+            }})
+            send({"method": "item/completed", "params": {
+                "threadId": thread_id, "turnId": turn_id, "completedAtMs": 1300,
+                "item": {
+                    "type": "collabAgentToolCall", "id": "spawn-b",
+                    "tool": "spawnAgent", "status": "completed",
+                    "senderThreadId": "agent-a",
+                    "receiverThreadIds": ["agent-b"],
+                    "prompt": "Validate nested behavior", "model": "gpt-5.6-luna",
+                    "reasoningEffort": "medium",
+                    "agentsStates": {"agent-b": {"status": "running"}},
+                },
+            }})
+            send({"method": "item/started", "params": {
+                "threadId": thread_id, "turnId": turn_id, "startedAtMs": 1400,
+                "item": {
+                    "type": "collabAgentToolCall", "id": "wait-agents",
+                    "tool": "wait", "status": "inProgress",
+                    "senderThreadId": thread_id,
+                    "receiverThreadIds": ["agent-a", "agent-b"],
+                    "prompt": None, "model": None, "reasoningEffort": None,
+                    "agentsStates": {},
+                },
+            }})
+            send({"method": "item/completed", "params": {
+                "threadId": thread_id, "turnId": turn_id, "completedAtMs": 2000,
+                "item": {
+                    "type": "collabAgentToolCall", "id": "wait-agents",
+                    "tool": "wait", "status": "failed",
+                    "senderThreadId": thread_id,
+                    "receiverThreadIds": ["agent-a", "agent-b"],
+                    "prompt": None, "model": None, "reasoningEffort": None,
+                    "agentsStates": {
+                        "agent-a": {"status": "completed", "message": "Parser supports variants"},
+                        "agent-b": {"status": "errored", "message": "Nested fixture failed"},
+                    },
+                },
+            }})
+            send({"method": "item/started", "params": {
+                "threadId": thread_id, "turnId": turn_id, "startedAtMs": 2200,
+                "item": {
+                    "type": "collabAgentToolCall", "id": "resume-a",
+                    "tool": "resumeAgent", "status": "inProgress",
+                    "senderThreadId": thread_id,
+                    "receiverThreadIds": ["agent-a"],
+                    "prompt": None, "model": None, "reasoningEffort": None,
+                    "agentsStates": {},
+                },
+            }})
+            send({"method": "item/completed", "params": {
+                "threadId": thread_id, "turnId": turn_id, "completedAtMs": 2300,
+                "item": {
+                    "type": "collabAgentToolCall", "id": "resume-a",
+                    "tool": "resumeAgent", "status": "completed",
+                    "senderThreadId": thread_id,
+                    "receiverThreadIds": ["agent-a"],
+                    "prompt": None, "model": None, "reasoningEffort": None,
+                    "agentsStates": {"agent-a": {"status": "running"}},
+                },
+            }})
+            send({"method": "item/completed", "params": {
+                "threadId": thread_id, "turnId": turn_id, "completedAtMs": 2400,
+                "item": {
+                    "type": "collabAgentToolCall", "id": "list-agents",
+                    "tool": "listAgents", "status": "completed",
+                    "senderThreadId": thread_id,
+                    "receiverThreadIds": ["agent-future"],
+                    "prompt": None, "model": None, "reasoningEffort": None,
+                    "agentsStates": {
+                        "agent-future": {"status": "pausedByHost", "message": "Future state"},
+                    },
+                },
             }})
             send({"method": "turn/completed", "params": {
                 "threadId": thread_id,
@@ -354,6 +476,65 @@ class CodexProviderTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertNotIn("private reasoning", repr(events))
 
+    async def test_collab_agents_are_normalized_with_nested_lifecycle_data(self):
+        context, events, _ = self.context()
+
+        await self.provider.run(context, "agents")
+
+        tools = [data for kind, data in events if kind == "tool"]
+        self.assertTrue(tools)
+        self.assertTrue(all("agents" in event for event in tools))
+        spawn_a = next(
+            event
+            for event in tools
+            if event["item_id"] == "spawn-a" and event["status"] == "completed"
+        )
+        self.assertEqual(
+            spawn_a["agents"],
+            [{
+                "id": "agent-a",
+                "parent_id": "thread-new",
+                "label": "Inspect the parser",
+                "state": "running",
+                "model": "gpt-5.6-sol",
+                "started_at": 1000,
+            }],
+        )
+        spawn_b = next(
+            event
+            for event in tools
+            if event["item_id"] == "spawn-b" and event["status"] == "completed"
+        )
+        self.assertEqual(spawn_b["agents"][0]["parent_id"], "agent-a")
+        self.assertEqual(spawn_b["agents"][0]["started_at"], 1200)
+
+        finished = next(event for event in tools if event["item_id"] == "wait-agents" and event["status"] == "failed")
+        self.assertEqual(
+            finished["agents"],
+            [
+                {
+                    "id": "agent-a", "state": "completed",
+                    "result": "Parser supports variants", "finished_at": 2000,
+                },
+                {
+                    "id": "agent-b", "state": "errored",
+                    "result": "Nested fixture failed", "finished_at": 2000,
+                },
+            ],
+        )
+        future = next(event for event in tools if event["item_id"] == "list-agents")
+        self.assertEqual(future["agents"][0]["state"], "pausedByHost")
+        resume_started = next(
+            event
+            for event in tools
+            if event["item_id"] == "resume-a" and event["status"] == "running"
+        )
+        self.assertEqual(
+            resume_started["agents"],
+            [{"id": "agent-a", "state": "running", "started_at": 2200}],
+        )
+        self.assertNotIn("reasoningEffort", repr(tools))
+
     async def test_file_and_permission_approvals_fail_closed_and_echo_grant(self):
         context, _, approvals = self.context(decisions=["reject", "allow"])
 
@@ -453,7 +634,22 @@ class CodexProviderTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["version"], "codex-cli 0.test")
         self.assertEqual(
             result["models"],
-            [{"id": "gpt-first", "name": "First"}, {"id": "gpt-second", "name": "Second"}],
+            [
+                {
+                    "id": "gpt-first",
+                    "name": "First",
+                    "reasoning_efforts": ["low", "medium", "high"],
+                    "default_reasoning_effort": "medium",
+                    "is_default": True,
+                },
+                {
+                    "id": "gpt-second",
+                    "name": "Second",
+                    "reasoning_efforts": ["medium", "high"],
+                    "default_reasoning_effort": "high",
+                    "is_default": False,
+                },
+            ],
         )
         self.assertNotIn("must-not-leak", json.dumps(result))
         self.assertFalse(any(row.get("method") == "turn/start" for row in self.received()))
