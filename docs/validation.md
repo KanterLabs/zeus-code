@@ -184,3 +184,28 @@ The required Roadmap updater failed. The installed tracker was still queried,
 but no Zeus Code project exists, so work was not put in an unrelated project.
 Hark publishing timed out. Repository checkpoints and this evidence file are the
 durable record for this work.
+
+## v1.0.4 npm installation (September 8, 2026)
+
+Local validation of the scoped `@kanterlabs/zeus-code` package:
+
+- Python suite: 178 tests passed; standalone build and process lifecycle smoke passed.
+- `python3 scripts/smoke-npm.py`: packed archive contains only the launcher,
+  package metadata, README and three release artifacts. Installation into an
+  isolated prefix works from an unrelated directory.
+- A populated daemon survives deletion of both the npm cache and npm install
+  prefix. Its stable runtime bundle remains available; the thread survives a
+  verified SQLite backup and daemon restart.
+- Bare launcher in a real terminal starts the isolated daemon, reaches connected
+  UI state and exits cleanly with Ctrl+Q. No provider execution was requested.
+- Launcher unit tests: 11 passed, covering prerequisite selection, verified
+  cache behavior, argument/cwd forwarding and startup/update rules.
+- After pushing commit `816228e`, `npx --yes github:KanterLabs/zeus-code --version`
+  fetched and prepared the GitHub package from an unrelated directory and printed
+  `zeus-code 1.0.4`. Bare GitHub npx launch also reached the connected UI and
+  exited cleanly; GitHub CI run `34247028837` passed for that commit.
+
+Registry publication remains a separate release gate pending npm credentials.
+All 16 npm tests pass, including publication, exact-byte retry, conflicting-version
+refusal, tag mismatch and registry failures. A real registry lookup and pack with
+no publishing credential reaches the documented `NPM_TOKEN` handoff error.
