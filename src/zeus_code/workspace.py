@@ -789,7 +789,11 @@ class Workspace:
                     break
 
     async def poll_forever(self, machine_id: str) -> None:
-        while not self._stopping and machine_id in self.machines:
+        # Python 3.11 wait_for can return a just-completed result while its
+        # caller is being cancelled. Honor the pending cancellation before
+        # starting another poll, including when replacing a saved connection.
+        task = asyncio.current_task()
+        while not self._stopping and machine_id in self.machines and not task.cancelling():
             await self.sync_machine(machine_id)
             try:
                 await asyncio.wait_for(self._wake.wait(), timeout=self.poll_interval)
