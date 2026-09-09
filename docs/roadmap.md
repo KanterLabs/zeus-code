@@ -1,13 +1,13 @@
 # Zeus Code roadmap
 
-Updated September 9, 2026. Released baseline: **v1.1.1**. Tracking: Helm
+Updated September 9, 2026. Released baseline: **v1.2.0**. Tracking: Helm
 project **ZC**; planning is recorded in **ZC-22**, and the complete implementation
 is tracked by **ZC-27** for the **v1.1.0** UX release and **v1.1.1** remote-provider follow-up. Unrelated future
 work remains in Backlog. Order below takes priority over older milestone labels.
 
 ## v1.2 daily workflow — ZC-28
 
-Implement all eight accepted follow-ups plus the requested running-subagent UX as one verified release:
+Shipped all eight accepted follow-ups plus the requested running-subagent UX in v1.2.0:
 
 | Improvement | Acceptance |
 | --- | --- |
@@ -21,12 +21,14 @@ Implement all eight accepted follow-ups plus the requested running-subagent UX a
 | Connection health | Show connection/client/server versions with explicit release check and safe local update actions. |
 | Live subagents | Surface running agents automatically on wide terminals, with compact narrow progress and selectable task/state/timing/result details preserving the parent conversation. |
 
-The reported running-thread switch/stale issue is a release regression gate:
-background execution must survive switching and reconnecting without replay.
+The running-thread switch/stale regression passes: background execution survives
+switching and reconnecting without replay. Busy event streams no longer keep
+client refresh waiting for an empty page.
 
-Verification includes populated cache/database preservation and real terminal
-walkthroughs at 48×16, 80×24 and 120×35. Existing physical two-machine and macOS
-signoff remain separate gates.
+Verification includes 298 Python tests, populated cache/database preservation,
+and real terminal walkthroughs at 48×16, 80×24, 120×35 and 160×40. GitHub
+assets and the idle dev upgrade are verified. npm trusted publishing remains
+blocked; physical two-machine and macOS signoff remain separate gates.
 
 ## v1.1.0 UX series
 
