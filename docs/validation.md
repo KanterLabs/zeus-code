@@ -1,6 +1,6 @@
 # v1 validation
 
-## v1.2.0 daily workflow candidate
+## v1.2.0 daily workflow
 
 September 9, 2026: the integrated suite passes **298 Python tests** and
 **16 npm tests** under **ZC-28**. Source and packaged lifecycle checks, npm
@@ -28,6 +28,20 @@ idle until requested, and no real update ran inside the fixture.
 Daemon regressions also cover rejecting a known unavailable provider without
 creating a run or event, retaining an already accepted request after provider
 availability changes, and adding projects during a frozen paginated snapshot.
+
+The v1.2.0 tag passed Python 3.11/3.14 and npm package CI. GitHub published
+all three assets; downloaded checksums and bytes match the tested archive.
+A managed v1.1.1 launcher updated from the public release to v1.2.0 and retained
+its rollback executable. Fresh npm download/open/reopen also passes against the
+local package. npm registry publication failed with E404 at trusted publishing;
+the registry remains on v1.0.6, and the post-publish registry E2E was skipped.
+
+The idle dev daemon was upgraded after a SQLite API backup passed integrity and
+full-content fingerprint checks. All **97 projects, 4 threads, 9 runs and 1,755
+events** and the server identity were unchanged after restart. The published
+client verified the v1.2.0 daemon over SSH, including Codex (6 models) and
+OpenCode (24 models). This SSH alias reaches the current dev machine; it does
+not establish a physical laptop-to-dev acceptance test.
 
 ## v1.1.1 remote discovery follow-up
 
