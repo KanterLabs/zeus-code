@@ -1,9 +1,32 @@
 # Zeus Code roadmap
 
-Updated September 8, 2026. Released baseline: **v1.1.1**. Tracking: Helm
+Updated September 9, 2026. Released baseline: **v1.1.1**. Tracking: Helm
 project **ZC**; planning is recorded in **ZC-22**, and the complete implementation
 is tracked by **ZC-27** for the **v1.1.0** UX release and **v1.1.1** remote-provider follow-up. Unrelated future
 work remains in Backlog. Order below takes priority over older milestone labels.
+
+## v1.2 daily workflow — ZC-28
+
+Implement all eight accepted follow-ups plus the requested running-subagent UX as one verified release:
+
+| Improvement | Acceptance |
+| --- | --- |
+| Workspace restore | Reopen the last server/project/thread with its draft and scroll position; no prompt replay on reconnect. |
+| Focused sidebar | Pinned/recent ordering, collapsed inactive projects and project search keep large workspaces manageable. |
+| Guided remote setup | SSH, runtime and readiness stages identify failures with a concrete recovery action. |
+| Useful progress | Show current action, elapsed time and last activity, distinguishing disconnected and quiet providers. |
+| Recoverable failures | Explicit retry/edit/check actions retain drafts and the identity of unconfirmed sends. |
+| Change review | Surface changed files and open individual diffs in the current conversation. |
+| Conversation management | First-prompt titles, rename, pin, archive, restore and search keep active work discoverable. |
+| Connection health | Show connection/client/server versions with explicit release check and safe local update actions. |
+| Live subagents | Surface running agents automatically on wide terminals, with compact narrow progress and selectable task/state/timing/result details preserving the parent conversation. |
+
+The reported running-thread switch/stale issue is a release regression gate:
+background execution must survive switching and reconnecting without replay.
+
+Verification includes populated cache/database preservation and real terminal
+walkthroughs at 48×16, 80×24 and 120×35. Existing physical two-machine and macOS
+signoff remain separate gates.
 
 ## v1.1.0 UX series
 
@@ -160,7 +183,11 @@ labels, event ordering and no duplicated submissions. Record exact versions and
 distinguish paid, explicitly opted-in real turns from provider fixtures. Keep
 private addresses and credentials out of the public evidence.
 
-## v1.2 — Workspace and remote confidence
+## Additional workspace and remote work
+
+Model controls and attention shipped in v1.1. The daily workflow release adds
+staged diagnostics; connection removal/disable and its recovery rules remain
+separate future work. These cards retain their original planning identities.
 
 | Card | Improvement | Acceptance outcome |
 | --- | --- | --- |
@@ -169,7 +196,7 @@ private addresses and credentials out of the public evidence.
 | ZC-14 | Edit, disable and forget machine connections | Correct aliases/remote executable paths, pause reconnection and forget a connection with draft export/recovery and explicit handling of uncertain sends; remote work continues. |
 | ZC-15 | Staged SSH diagnostics | Identify alias, authentication, executable, daemon, protocol and provider failures with concrete next actions and machine-readable results. |
 
-## v1.3 — Operations and history
+## Future operations and history
 
 | Card | Improvement | Acceptance outcome |
 | --- | --- | --- |

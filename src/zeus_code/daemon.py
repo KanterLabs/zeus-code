@@ -128,6 +128,7 @@ class Daemon:
 
     async def _handle_client(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         current = asyncio.current_task()
+        snapshot_state: dict[str, Any] = {}
         if len(self.clients) >= MAX_CLIENTS or self._closing:
             writer.close()
             return
@@ -156,7 +157,9 @@ class Daemon:
                     params = request.get("params", {})
                     if not isinstance(method, str) or not isinstance(params, dict):
                         raise RequestError("invalid_request", "method must be text and params must be an object.")
-                    result = await self.dispatch(method, params)
+                    result = await self.dispatch(
+                        method, params, snapshot_state=snapshot_state
+                    )
                     response = {"id": request_id, "result": result}
                 except (asyncio.TimeoutError, ConnectionError):
                     break
@@ -179,6 +182,7 @@ class Daemon:
         except (ConnectionError, asyncio.TimeoutError, ValueError):
             pass
         finally:
+            snapshot_state.clear()
             self.clients.discard(writer)
             if current is not None:
                 self.client_tasks.discard(current)
@@ -197,28 +201,58 @@ class Daemon:
         if size >= budget:
             raise RequestError("storage_limit", "History storage limit reached. Back up the state and increase ZEUS_CODE_MAX_STORAGE_MB before starting more work. Existing history is preserved.")
 
-    async def dispatch(self, method: str, params: dict) -> Any:
+    async def dispatch(
+        self,
+        method: str,
+        params: dict,
+        *,
+        snapshot_state: dict[str, Any] | None = None,
+    ) -> Any:
         assert self.store is not None
         s = self.store
         if method == "hello":
             return self.hello()
         if method == "snapshot":
-            last = s.last_seq() if callable(s.last_seq) else s.last_seq
             offset = _integer(params, "offset", 0, 2**31 - 1)
-            records = [("projects", p) for p in s.projects()]
-            records.extend(("threads", t) for t in sorted(s.threads(), key=lambda t: (t["created_at"], t["id"])))
-            records.extend(("approvals", a) for a in s.approvals())
-            result = {**self.hello(), "projects": [], "threads": [], "approvals": [],
-                      "last_seq": last, "next_offset": None}
+            continuing = (
+                snapshot_state is not None
+                and offset != 0
+                and snapshot_state.get("next_offset") == offset
+            )
+            if continuing:
+                records = snapshot_state["records"]
+                metadata = snapshot_state["metadata"]
+            else:
+                if snapshot_state is not None:
+                    snapshot_state.clear()
+                last = s.last_seq() if callable(s.last_seq) else s.last_seq
+                records = [("projects", p) for p in s.projects()]
+                records.extend(("threads", t) for t in sorted(s.threads(), key=lambda t: (t["created_at"], t["id"])))
+                records.extend(("approvals", a) for a in s.approvals())
+                records = records[offset:]
+                metadata = {**self.hello(), "last_seq": last}
+            result = {**metadata, "projects": [], "threads": [], "approvals": [],
+                      "next_offset": None}
             used = 0
-            for index in range(offset, len(records)):
-                category, record = records[index]
+            consumed = 0
+            for category, record in records:
                 size = len(json.dumps(record, ensure_ascii=False).encode("utf-8")) + 2
                 if used and used + size > 512 * 1024:
-                    result["next_offset"] = index
+                    next_offset = offset + consumed
+                    result["next_offset"] = next_offset
+                    if snapshot_state is not None:
+                        snapshot_state.update({
+                            "next_offset": next_offset,
+                            "records": records[consumed:],
+                            "metadata": metadata,
+                        })
                     break
                 result[category].append(record)
                 used += size
+                consumed += 1
+            else:
+                if snapshot_state is not None:
+                    snapshot_state.clear()
             return result
         if method == "providers":
             return await self._check_providers()
@@ -285,6 +319,17 @@ class Daemon:
             thread = s.thread(thread_id)
             if thread["archived"]:
                 raise RequestError("archived", "Unarchive this thread before sending a new message.")
+            provider = thread["provider"]
+            cached_provider = self._provider_cache.get(provider)
+            if cached_provider is not None and cached_provider.get("available") is False:
+                detail = cached_provider.get("detail")
+                if not isinstance(detail, str) or not detail.strip():
+                    detail = "Complete provider setup on this machine and refresh its status."
+                else:
+                    detail = detail.strip()[:500]
+                raise RequestError(
+                    "provider_unavailable", f"{provider} is unavailable: {detail}"
+                )
             # Check duplicates before capacity: an accepted request must remain retryable.
             if len(self.tasks) >= MAX_RUNS:
                 existing = s.active_run(thread_id)

@@ -239,7 +239,8 @@ async def _run_async(args: argparse.Namespace) -> int:
         result = await _rpc(args, "stop")
     elif command == "doctor":
         async with _configured_client(args) as client:
-            result = {"server": client.hello, "providers": await client.call("providers")}
+            result = {"client_version": __version__, "server": client.hello,
+                      "providers": await client.call("providers")}
     elif command == "project" and args.project_command == "add":
         project_path = str(args.path) if args.host is not None else str(args.path.expanduser().resolve())
         params: dict[str, Any] = {"path": project_path}

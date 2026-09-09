@@ -94,7 +94,9 @@ def summarize_agents(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
     not overwrite one another. Sequence ordering ignores delayed older events,
     while a newer event may legitimately resume an existing child. Observed
     ``started_at`` values are retained (numeric values are epoch milliseconds),
-    and completed ``elapsed`` values are expressed in seconds.
+    completed ``elapsed`` values are expressed in seconds, and ``run_id`` names
+    the parent run of the latest snapshot that reported each agent. Missing
+    source run IDs remain explicit ``None`` rather than being inferred.
     """
     source = [event for event in events[-MAX_AGENT_EVENTS:] if isinstance(event, dict)]
     source = [event for _, event in sorted(enumerate(source), key=lambda pair: _event_sequence(pair[1], pair[0]))]
@@ -129,13 +131,37 @@ def summarize_agents(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
                     "label": agent_id,
                     "state": "unknown",
                     "result": None,
+                    "run_id": None,
                     "_first_seen": first_seen,
                     "_updated_order": update_order,
+                    "_known_run_id": None,
                     "_started_at": None,
                     "_finished_at": None,
                 }
                 first_seen += 1
                 merged[agent_id] = record
+
+            event_run_id = _text(event.get("run_id"), 512)
+            previous_run_id = record["_known_run_id"]
+            run_changed = (
+                previous_run_id is not None
+                and event_run_id is not None
+                and previous_run_id != event_run_id
+            )
+            # A provider may reuse a stable child ID in a later parent run.
+            # Known cross-run updates start a fresh visible lifecycle; carrying
+            # the old timer or result forward would claim facts not reported
+            # for the new run.
+            if run_changed:
+                record["state"] = "unknown"
+                record["result"] = None
+                record.pop("elapsed", None)
+                record.pop("started_at", None)
+                record["_started_at"] = None
+                record["_finished_at"] = None
+            record["run_id"] = event_run_id
+            if event_run_id is not None:
+                record["_known_run_id"] = event_run_id
 
             if "parent_id" in raw:
                 record["parent_id"] = _text(raw.get("parent_id"), 512)
@@ -203,7 +229,7 @@ def summarize_agents(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
         )[:MAX_AGENTS]
     records.sort(key=lambda record: record["_first_seen"])
     for record in records:
-        for internal in ("_first_seen", "_updated_order", "_started_at", "_finished_at"):
+        for internal in ("_first_seen", "_updated_order", "_known_run_id", "_started_at", "_finished_at"):
             record.pop(internal, None)
     return records
 

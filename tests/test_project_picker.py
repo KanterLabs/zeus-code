@@ -51,7 +51,9 @@ class ProjectPickerTests(unittest.TestCase):
             [row.project_id for row in rows if row.kind == "project"],
             ["p0", "p95"],
         )
-        self.assertEqual([row.thread_id for row in rows if row.kind == "thread"], ["t-active"])
+        inactive = next(row for row in rows if row.kind == "project" and row.project_id == "p95")
+        self.assertTrue(inactive.collapsed)
+        self.assertEqual([row.thread_id for row in rows if row.kind == "thread"], [])
         self.assertEqual(len(project_picker_results(self.workspace)), 97)
         self.assertEqual(
             [result["project"]["id"] for result in project_picker_results(self.workspace, "clients ACME")],

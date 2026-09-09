@@ -150,6 +150,9 @@ class ActivityUITests(unittest.IsolatedAsyncioTestCase):
         async def send(prompt, **kwargs):
             calls.append(prompt)
             await waiting.wait()
+            # Match Workspace.send_prompt's acknowledged-send contract. The
+            # TUI mirrors the revision-guarded workspace draft after success.
+            self.workspace.set_draft("")
             return {"id": "run-1", "state": "running"}
 
         self.workspace.send_prompt = send

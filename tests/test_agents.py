@@ -5,10 +5,12 @@ import unittest
 from zeus_code.agents import MAX_AGENT_EVENTS, MAX_AGENTS, summarize_agents
 
 
-def event(seq, agents, created_at=None):
+def event(seq, agents, created_at=None, run_id=None):
     value = {"seq": seq, "kind": "tool", "data": {"agents": agents}}
     if created_at is not None:
         value["created_at"] = created_at
+    if run_id is not None:
+        value["run_id"] = run_id
     return value
 
 
@@ -68,6 +70,7 @@ class AgentSummaryTests(unittest.TestCase):
                     "label": "Research API",
                     "state": "completed",
                     "result": "Contract mapped",
+                    "run_id": None,
                     "model": "gpt-sol",
                     "updated_at": "2026-09-08T00:00:12Z",
                     "elapsed": 12.5,
@@ -78,6 +81,7 @@ class AgentSummaryTests(unittest.TestCase):
                     "label": "Read fixtures",
                     "state": "failed",
                     "result": "Fixture was invalid",
+                    "run_id": None,
                     "updated_at": "2026-09-08T00:00:12Z",
                 },
             ],
@@ -122,7 +126,10 @@ class AgentSummaryTests(unittest.TestCase):
         summary = summarize_agents(events)
         self.assertNotIn("outside-window", {agent["id"] for agent in summary})
         self.assertLessEqual(len(summary), MAX_AGENTS)
-        self.assertTrue(all(set(agent) >= {"id", "parent_id", "label", "state", "result"} for agent in summary))
+        self.assertTrue(all(
+            set(agent) >= {"id", "parent_id", "label", "state", "result", "run_id"}
+            for agent in summary
+        ))
 
     def test_numeric_lifecycle_timestamps_are_milliseconds(self):
         summary = summarize_agents(
@@ -134,6 +141,67 @@ class AgentSummaryTests(unittest.TestCase):
 
         self.assertEqual(summary[0]["elapsed"], 1.5)
         self.assertEqual(summary[0]["started_at"], 1000)
+
+    def test_latest_agent_update_tracks_parent_run_and_resets_reused_lifecycle(self):
+        old = event(
+            1,
+            [{
+                "id": "agent", "state": "running", "started_at": 1_000,
+                "elapsed": 9, "result": "Old result",
+            }],
+            "2026-09-09T00:00:01Z",
+            run_id="run-old",
+        )
+        unrelated_new_run_event = {
+            "seq": 2,
+            "run_id": "run-new",
+            "kind": "status",
+            "data": {"text": "New parent run started"},
+        }
+
+        before_agent_update = summarize_agents([old, unrelated_new_run_event])
+        self.assertEqual(before_agent_update[0]["run_id"], "run-old")
+        self.assertEqual(before_agent_update[0]["started_at"], 1_000)
+
+        resumed = summarize_agents([
+            old,
+            unrelated_new_run_event,
+            event(3, [{"id": "agent", "state": "running"}], run_id="run-new"),
+        ])
+        self.assertEqual(resumed[0]["run_id"], "run-new")
+        self.assertEqual(resumed[0]["state"], "running")
+        self.assertNotIn("started_at", resumed[0])
+        self.assertNotIn("elapsed", resumed[0])
+        self.assertIsNone(resumed[0]["result"])
+
+        resumed_after_unknown_source = summarize_agents([
+            old,
+            event(2, [{"id": "agent", "state": "running"}]),
+            event(3, [{"id": "agent", "state": "running"}], run_id="run-new"),
+        ])
+        self.assertEqual(resumed_after_unknown_source[0]["run_id"], "run-new")
+        self.assertNotIn("started_at", resumed_after_unknown_source[0])
+        self.assertNotIn("elapsed", resumed_after_unknown_source[0])
+
+        restarted = summarize_agents([
+            old,
+            event(
+                3,
+                [{"id": "agent", "state": "running", "started_at": 5_000}],
+                run_id="run-new",
+            ),
+        ])
+        self.assertEqual(restarted[0]["run_id"], "run-new")
+        self.assertEqual(restarted[0]["started_at"], 5_000)
+
+    def test_missing_latest_source_run_id_is_preserved_as_unknown(self):
+        summary = summarize_agents([
+            event(1, [{"id": "agent", "state": "running"}], run_id="known-run"),
+            event(2, [{"id": "agent", "state": "running"}]),
+        ])
+
+        self.assertIn("run_id", summary[0])
+        self.assertIsNone(summary[0]["run_id"])
 
 
 if __name__ == "__main__":

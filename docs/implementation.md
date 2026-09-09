@@ -96,3 +96,40 @@ Release metadata includes `protocol_version` alongside `schema_version`.
 Compatible updates switch a managed launcher to a new immutable runtime while
 retaining running-daemon archives and the previous executable. Legacy archives
 in use are retained until a later explicit update can replace their entrypoint.
+
+## Daily workflow state (v1.2)
+
+Client cache version 1 gains additive project/thread preferences for pins,
+recency and collapse, plus recovery evidence and last successful connection time.
+Selection changes remain local view operations. They must never cancel a daemon
+run or automatically resend an unconfirmed prompt. Offline snapshots are last
+known data; connection checks and explicit retries are separate actions.
+
+The first accepted run assigns a short, whitespace-normalized title only to an
+untouched default-named conversation. The title change and run acceptance use
+one SQLite transaction; duplicate request IDs and later prompts do not rename
+conversations. Database schema and RPC protocol remain at version 1.
+
+Client health checks reuse stable release validation. An explicit update runs
+the existing updater in a child process with captured output, preserving the
+terminal and using the same immutable-runtime, compatibility and backup rules
+as `zeus-code update`. It does not restart a local or remote daemon.
+
+Workspace refresh drains through the snapshot's fixed event high-water mark,
+processing the whole final page and reconciling any later state transitions.
+It does not wait for an empty event page: a continuously busy provider must not
+prevent publishing the refreshed snapshot or connection state. Later events
+remain available from the retained cursor on the next poll.
+
+Automatic-agent summaries retain the parent run ID of the latest reporting
+event. The live panel counts current-run observations; older or unscoped
+running states remain available as frozen, last-reported history rather than
+becoming live again when a new parent turn starts.
+
+Snapshot pages on one RPC connection traverse a frozen record set and retain
+its original sequence boundary. Adding a project between pages cannot shift
+thread offsets. The daemon releases the remaining records after the final page
+or when the connection closes; protocol-1 clients keep using `next_offset`.
+New sends are rejected before acceptance when cached provider discovery
+explicitly reports unavailable. Previously accepted request IDs still return
+the original run, including after provider availability changes.
