@@ -1,11 +1,13 @@
 """Explicit terminal palettes; no background-color probing or external libraries."""
 
+DEFAULT_THEME = "light"
+
 THEMES = ("dark", "light", "terminal", "monochrome")
 
 
-def color_pairs(theme: str = "dark", colors: int = 256) -> dict[int, tuple[int, int]]:
+def color_pairs(theme: str = DEFAULT_THEME, colors: int = 256) -> dict[int, tuple[int, int]]:
     if theme not in THEMES:
-        theme = "dark"
+        theme = DEFAULT_THEME
     if colors < 8 or theme == "monochrome":
         return {}
     if colors >= 256:

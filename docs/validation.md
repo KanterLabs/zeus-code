@@ -1,5 +1,21 @@
 # v1 validation
 
+## v1.2.1 light theme and Codex activity compatibility
+
+Light is the default when no theme is saved; existing explicit selections stay
+unchanged. A live dev inspection confirmed that v1.2.0 stored public
+`subAgentActivity` items as generic tool text while collaboration events had
+empty agent lists. This explains the missing panel and F9 reporting no agents.
+The client now recovers stable identities from those persisted items, so older
+daemon data becomes visible without replay or a server restart. It uses the
+reported activity kind, never the surrounding tool's completion, as lifecycle
+evidence. Interactions alone preserve a known state or remain unknown.
+
+The wide-terminal regression uses this actual legacy event shape, rather than
+supplying a normalized agent list. The integrated suite passes 303 Python tests
+and 16 npm tests, including 17 Codex subprocess fixtures. No paid model turns
+were used for validation.
+
 ## v1.2.0 daily workflow
 
 September 9, 2026: the integrated suite passes **298 Python tests** and

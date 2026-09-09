@@ -20,7 +20,7 @@ from .agent_panel import AgentPanelView, build_agent_panel
 from .agents import summarize_agents
 from .health import check_latest_release, update_client
 from .paths import default_data_dir
-from .themes import THEMES, color_pairs
+from .themes import DEFAULT_THEME, THEMES, color_pairs
 from .transcript import render_transcript
 from .ui_forms import Form
 from .workspace import Workspace
@@ -570,7 +570,7 @@ class TUIApplication:
                 self.status = f"{selected.get('alias')} unavailable · check SSH and zeus-code bridge"
 
     def _init_colors(self) -> None:
-        theme = str(self.workspace.state.get("settings", {}).get("theme") or "dark")
+        theme = str(self.workspace.state.get("settings", {}).get("theme") or DEFAULT_THEME)
         self._color_enabled = False
         if theme == "monochrome" or not curses.has_colors():
             return
@@ -580,7 +580,7 @@ class TUIApplication:
             try:
                 curses.use_default_colors()
             except curses.error:
-                selected_theme = "dark"
+                selected_theme = DEFAULT_THEME
         pairs = color_pairs(selected_theme, curses.COLORS)
         for pair, (foreground_color, background_color) in pairs.items():
             curses.init_pair(pair, foreground_color, background_color)
@@ -2472,9 +2472,9 @@ class TUIApplication:
         self.status = "Enter sends" if not current else "Enter inserts newline; Ctrl+S sends"
 
     def _theme_form(self) -> None:
-        current = str(self.workspace.state.get("settings", {}).get("theme") or "dark")
+        current = str(self.workspace.state.get("settings", {}).get("theme") or DEFAULT_THEME)
         if current not in THEMES:
-            current = "dark"
+            current = DEFAULT_THEME
         self._show_form(
             "Theme", [("theme", current)], self._submit_theme,
             choices={"theme": list(THEMES)},
@@ -2482,9 +2482,9 @@ class TUIApplication:
         )
 
     def _submit_theme(self, values: dict[str, str]) -> None:
-        theme = values.get("theme", "dark")
+        theme = values.get("theme", DEFAULT_THEME)
         if theme not in THEMES:
-            theme = "dark"
+            theme = DEFAULT_THEME
         self.workspace.state.setdefault("settings", {})["theme"] = theme
         self.workspace._changed(force=True)
         self.form, self.overlay = None, None
@@ -2556,7 +2556,7 @@ class TUIApplication:
             ),
             CommandAction("approval", "Review approval", self._approval_target(approval), lambda a=approval: self._open_approval(a), "F6", approval is not None, "No approval is waiting.", "allow reject permission"),
             CommandAction("tools", "Toggle tool output", thread_target, self._toggle_tools, "F7", bool(thread), "Select a thread first.", "expand collapse"),
-            CommandAction("theme", "Choose theme", str(self.workspace.state.get("settings", {}).get("theme") or "dark"), self._theme_form, "", True, "", "dark light terminal monochrome settings"),
+            CommandAction("theme", "Choose theme", str(self.workspace.state.get("settings", {}).get("theme") or DEFAULT_THEME), self._theme_form, "", True, "", "dark light terminal monochrome settings"),
             CommandAction("enter", "Toggle Enter behavior", "composer · Enter sends" if self.workspace.state["settings"].get("enter_sends", True) else "composer · Enter inserts newline", self._toggle_enter_sends, "F8", True, "", "settings send newline"),
             CommandAction("servers", "Servers", machine_name, self._show_machines, "Ctrl+G", True, "", "machines ssh connect"),
             CommandAction("health", "Health", f"client {__version__} · {machine_name} {machine.get('connection')}", self._open_health, "", True, "", "versions update diagnostics"),

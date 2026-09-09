@@ -115,7 +115,8 @@ Zeus displays automatic agents; it does not launch workers itself.
 until their conversation is visible at the latest messages. Browsing history or
 opening a menu keeps them unread. Pending approvals remain explicit.
 **Ctrl+K** opens a searchable command palette with the selected action's target
-and any reason it is unavailable. Choose **Choose theme** for dark, light,
+and any reason it is unavailable. Light is the default. Saved theme choices are preserved.
+Choose **Choose theme** for dark, light,
 terminal-default or monochrome colors.
 
 Form defaults are selected: typing replaces them, and **Ctrl+U** clears a field.

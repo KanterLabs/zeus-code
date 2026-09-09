@@ -160,10 +160,31 @@ and `isDefault` from the installed app-server's `model/list` response. The clien
 uses these capabilities for its searchable picker. An unset model remains
 **Provider default**; discovery does not establish the actual model of a run.
 
-`collabAgentToolCall` item notifications carry normalized `data.agents`
-snapshots. Receiver thread IDs and `agentsStates` keys establish child identity;
-a spawn's sender establishes its parent. Spawn prompts provide task labels and
-provider state messages provide public results. Unknown states remain visible.
-Observed lifecycle timestamps use epoch milliseconds. No private reasoning or
-synthetic resolved model is included. Tests cover concurrent children, nesting,
-completion, interruption and later reuse, with persisted replay after restart.
+Codex has two stable child-agent item shapes. `collabAgentToolCall` notifications
+may carry receiver IDs and `agentsStates`; a spawn's sender establishes its
+parent, its prompt provides the task label, and provider state messages provide
+public results. The installed 0.153.4 schema also defines `subAgentActivity`,
+whose public fields are `agentThreadId`, `agentPath`, and `kind`. Retained local
+app-server events confirmed that this second shape is emitted even when the
+corresponding collaboration snapshots have empty receiver and state collections.
+This validation read only existing public tool metadata and required no model
+turn.
+
+Zeus normalizes both shapes into `data.agents`. For `subAgentActivity`,
+`agentThreadId` is the stable identity and `agentPath` is the available public
+label. An already observed immediate parent path establishes nesting; Zeus does
+not invent a parent when that relationship has not been observed. The intrinsic
+activity kind maps `started` to running, `interrupted` to cancelled, and
+`completed` to completed. `interacted` preserves an agent's previously reported
+state, or remains explicitly unknown when it is the first observation. The
+surrounding item's started/completed status describes delivery of the activity
+item and does not override the intrinsic child state.
+
+Observed lifecycle timestamps use epoch milliseconds. `subAgentActivity` does
+not report a task prompt, model, or result, so Zeus leaves those fields absent
+rather than guessing. Unknown future kinds remain visible as unknown. No private
+reasoning or synthetic resolved model is included. Tests cover empty collaboration
+snapshots, concurrent children, path-based nesting, interaction, completion,
+interruption and later reuse, with persisted replay after restart. Older Zeus
+events that stored the activity item as public generic-tool JSON remain readable
+through the summary compatibility path.

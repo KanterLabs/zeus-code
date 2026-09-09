@@ -193,7 +193,14 @@ def validate_bundle(
 
 
 def release_body() -> str:
-    return """## Daily workflow improvements
+    return """## Light theme and automatic agent visibility
+
+Light is now the default for clients without a saved theme. Existing theme choices are preserved.
+
+Fix missing automatic agents from current Codex activity events. The client also
+recovers agent activity already recorded by older daemons, without replaying prompts.
+
+## Daily workflow improvements
 
 - Restore your last server, project, conversation, draft and history position.
 - Keep projects and conversations focused with pins, recent ordering, collapse and search.

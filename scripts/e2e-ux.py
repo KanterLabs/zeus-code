@@ -4,6 +4,7 @@ import argparse
 import asyncio
 import errno
 import fcntl
+import json
 import os
 from pathlib import Path
 import pty
@@ -451,7 +452,7 @@ async def main():
                 scene_runs[scene] = run
                 store.append_event(thread['id'], run['id'], 'tool', {
                     'item_id': 'collab', 'tool_type': 'collabAgentToolCall', 'title': 'Review agents',
-                    'status': 'completed', 'agents': [
+                    'status': 'completed', 'agents': [] if scene == 'running' else [
                         {
                             'id': 'agent-one', 'parent_id': thread['id'], 'label': 'Review tests',
                             'state': 'running' if scene == 'running' else 'completed',
@@ -460,6 +461,19 @@ async def main():
                         {'id': 'agent-two', 'parent_id': thread['id'], 'label': 'Review docs', 'state': 'completed', 'result': 'Docs checked'},
                     ],
                 })
+                if scene == 'running':
+                    # Real pre-1.2.1 daemons stored these public Codex items
+                    # without an agents array. The client must still show them.
+                    for agent_id, label, kind in (
+                        ('agent-one', 'Review tests', 'started'),
+                        ('agent-two', 'Review docs', 'completed'),
+                    ):
+                        store.append_event(thread['id'], run['id'], 'tool', {
+                            'item_id': 'legacy-' + agent_id,
+                            'tool_type': 'subAgentActivity', 'title': 'subAgentActivity',
+                            'status': 'completed',
+                            'text': json.dumps({'agentThreadId': agent_id, 'agentPath': label, 'kind': kind}),
+                        })
                 if scene == 'completed':
                     store.append_event(thread['id'], run['id'], 'message', {
                         'role': 'assistant', 'item_id': 'answer', 'text': 'Checked the change.\n- Tests pass.\n```python\n    ready = True\n```'})
