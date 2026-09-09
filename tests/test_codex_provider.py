@@ -10,6 +10,7 @@ import unittest
 import sys
 from unittest.mock import patch
 
+from zeus_code.agents import summarize_agents
 from zeus_code.providers.base import ProviderError, RunContext
 from zeus_code.providers.codex import CodexProvider
 
@@ -288,6 +289,44 @@ for raw in sys.stdin:
                 "threadId": thread_id,
                 "turn": {"id": turn_id, "status": "completed", "items": []},
             }})
+        elif prompt == "subagent activity":
+            # Current Codex emits empty collab snapshots alongside intrinsic
+            # subAgentActivity items carrying the stable identity and state.
+            send({"method": "item/completed", "params": {
+                "threadId": thread_id, "turnId": turn_id, "completedAtMs": 900,
+                "item": {
+                    "type": "collabAgentToolCall", "id": "list-empty",
+                    "tool": "listAgents", "status": "completed",
+                    "senderThreadId": thread_id, "receiverThreadIds": [],
+                    "prompt": None, "model": None, "reasoningEffort": None,
+                    "agentsStates": {},
+                },
+            }})
+
+            def activity(item_id, path, agent_thread_id, kind, started, completed):
+                item = {
+                    "type": "subAgentActivity", "id": item_id,
+                    "agentPath": path, "agentThreadId": agent_thread_id,
+                    "kind": kind,
+                }
+                send({"method": "item/started", "params": {
+                    "threadId": thread_id, "turnId": turn_id,
+                    "startedAtMs": started, "item": item,
+                }})
+                send({"method": "item/completed", "params": {
+                    "threadId": thread_id, "turnId": turn_id,
+                    "completedAtMs": completed, "item": item,
+                }})
+
+            activity("activity-parent-start", "/root/parent", "agent-parent", "started", 1000, 1001)
+            activity("activity-child-start", "/root/parent/child", "agent-child", "started", 1100, 1101)
+            activity("activity-parent-interact", "/root/parent", "agent-parent", "interacted", 1200, 1201)
+            activity("activity-child-stop", "/root/parent/child", "agent-child", "interrupted", 1300, 1301)
+            activity("activity-parent-done", "/root/parent", "agent-parent", "completed", 1400, 1401)
+            send({"method": "turn/completed", "params": {
+                "threadId": thread_id,
+                "turn": {"id": turn_id, "status": "completed", "items": []},
+            }})
     elif method == "turn/interrupt":
         send({"id": message["id"], "result": {}})
         state = "interrupted"
@@ -534,6 +573,85 @@ class CodexProviderTests(unittest.IsolatedAsyncioTestCase):
             [{"id": "agent-a", "state": "running", "started_at": 2200}],
         )
         self.assertNotIn("reasoningEffort", repr(tools))
+
+    async def test_subagent_activity_is_normalized_when_collab_snapshots_are_empty(self):
+        context, events, _ = self.context()
+
+        await self.provider.run(context, "subagent activity")
+
+        tools = [data for kind, data in events if kind == "tool"]
+        collab = next(tool for tool in tools if tool["item_id"] == "list-empty")
+        self.assertEqual(collab["agents"], [])
+        activity = [tool for tool in tools if tool["tool_type"] == "subAgentActivity"]
+        self.assertEqual(len(activity), 10)
+
+        parent_started = [
+            tool["agents"][0]
+            for tool in activity
+            if tool["item_id"] == "activity-parent-start"
+        ]
+        self.assertEqual([agent["state"] for agent in parent_started], ["running", "running"])
+        self.assertEqual(parent_started[-1]["id"], "agent-parent")
+        self.assertEqual(parent_started[-1]["label"], "/root/parent")
+        self.assertEqual(parent_started[-1]["started_at"], 1000)
+        self.assertEqual(parent_started[-1]["updated_at"], 1001)
+
+        child_started = next(
+            tool["agents"][0]
+            for tool in activity
+            if tool["item_id"] == "activity-child-start"
+        )
+        self.assertEqual(child_started["parent_id"], "agent-parent")
+        parent_interacted = next(
+            tool["agents"][0]
+            for tool in activity
+            if tool["item_id"] == "activity-parent-interact"
+        )
+        self.assertEqual(parent_interacted["state"], "unknown")
+        child_interrupted = activity[-4]["agents"][0]
+        self.assertEqual(child_interrupted["state"], "cancelled")
+        self.assertIn("finished_at", child_interrupted)
+        parent_completed = activity[-2]["agents"][0]
+        self.assertEqual(parent_completed["state"], "completed")
+
+        snapshots = [
+            {"seq": index, "run_id": "zeus-run", "kind": "tool", "data": tool}
+            for index, tool in enumerate(activity, start=1)
+        ]
+        before_completion = summarize_agents(snapshots[:6])
+        self.assertEqual(
+            {agent["id"]: agent["state"] for agent in before_completion},
+            {"agent-parent": "running", "agent-child": "running"},
+        )
+        final = summarize_agents(snapshots)
+        self.assertEqual(
+            {agent["id"]: agent["state"] for agent in final},
+            {"agent-parent": "completed", "agent-child": "cancelled"},
+        )
+        self.assertFalse(any("reason" in repr(tool).casefold() for tool in activity))
+
+    def test_subagent_activity_handles_future_kind_and_bounds_path_memory(self):
+        known_paths = {f"/root/existing-{index}": f"agent-{index}" for index in range(1000)}
+
+        agents = self.provider._subagent_activity(
+            {
+                "agentThreadId": "future-agent",
+                "agentPath": "/root/new-agent",
+                "kind": ["future", "shape"],
+            },
+            timestamp=2000,
+            started_at=None,
+            subagent_ids_by_path=known_paths,
+        )
+
+        self.assertEqual(agents, [{
+            "id": "future-agent",
+            "state": "unknown",
+            "label": "/root/new-agent",
+            "updated_at": 2000,
+        }])
+        self.assertEqual(len(known_paths), 1000)
+        self.assertNotIn("/root/new-agent", known_paths)
 
     async def test_file_and_permission_approvals_fail_closed_and_echo_grant(self):
         context, _, approvals = self.context(decisions=["reject", "allow"])

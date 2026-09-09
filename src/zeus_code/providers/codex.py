@@ -27,6 +27,7 @@ _PENDING_BYTES_LIMIT = 4 * 1024 * 1024
 _PENDING_MESSAGE_LIMIT = 4096
 _REQUEST_TIMEOUT = 20.0
 _CLEANUP_TIMEOUT = 2.0
+_SUBAGENT_PATH_LIMIT = 1000
 
 
 def _codex_executable(executable: str) -> str | None:
@@ -330,7 +331,8 @@ class CodexProvider:
         server = self._connection()
         provider_thread_id: str | None = None
         turn_id: str | None = None
-        collab_started_at: dict[str, int | float] = {}
+        agent_item_started_at: dict[str, int | float] = {}
+        subagent_ids_by_path: dict[str, str] = {}
         try:
             await context.emit(
                 "status",
@@ -381,7 +383,8 @@ class CodexProvider:
                     message,
                     provider_thread_id,
                     turn_id,
-                    collab_started_at,
+                    agent_item_started_at,
+                    subagent_ids_by_path,
                 )
                 if done:
                     return
@@ -393,7 +396,8 @@ class CodexProvider:
                     message,
                     provider_thread_id,
                     turn_id,
-                    collab_started_at,
+                    agent_item_started_at,
+                    subagent_ids_by_path,
                 ):
                     return
         except asyncio.CancelledError:
@@ -476,7 +480,8 @@ class CodexProvider:
         message: dict[str, Any],
         thread_id: str,
         turn_id: str,
-        collab_started_at: dict[str, int | float],
+        agent_item_started_at: dict[str, int | float],
+        subagent_ids_by_path: dict[str, str],
     ) -> bool:
         method = message.get("method")
         if isinstance(method, str) and "id" in message:
@@ -583,7 +588,8 @@ class CodexProvider:
                     item,
                     lifecycle=lifecycle,
                     timestamp=timestamp,
-                    collab_started_at=collab_started_at,
+                    agent_item_started_at=agent_item_started_at,
+                    subagent_ids_by_path=subagent_ids_by_path,
                 )
         elif method in {"warning", "configWarning"}:
             text = params.get("message", params.get("summary"))
@@ -622,7 +628,8 @@ class CodexProvider:
         *,
         lifecycle: str,
         timestamp: int | float | None,
-        collab_started_at: dict[str, int | float],
+        agent_item_started_at: dict[str, int | float],
+        subagent_ids_by_path: dict[str, str],
     ) -> None:
         item_type = item.get("type")
         item_id = item.get("id")
@@ -686,19 +693,72 @@ class CodexProvider:
         }
         if text:
             event["text"] = text
-        if item_type == "collabAgentToolCall":
+        if item_type in {"collabAgentToolCall", "subAgentActivity"}:
             if lifecycle == "started" and timestamp is not None:
-                collab_started_at[item_id] = timestamp
-            started_at = collab_started_at.get(item_id)
-            event["agents"] = self._collab_agents(
-                item,
-                lifecycle=lifecycle,
-                timestamp=timestamp,
-                started_at=started_at,
-            )
+                agent_item_started_at[item_id] = timestamp
+            started_at = agent_item_started_at.get(item_id)
+            if item_type == "collabAgentToolCall":
+                event["agents"] = self._collab_agents(
+                    item,
+                    lifecycle=lifecycle,
+                    timestamp=timestamp,
+                    started_at=started_at,
+                )
+            else:
+                event["agents"] = self._subagent_activity(
+                    item,
+                    timestamp=timestamp,
+                    started_at=started_at,
+                    subagent_ids_by_path=subagent_ids_by_path,
+                )
             if completed:
-                collab_started_at.pop(item_id, None)
+                agent_item_started_at.pop(item_id, None)
         await context.emit("tool", event)
+
+    @staticmethod
+    def _subagent_activity(
+        item: dict[str, Any],
+        *,
+        timestamp: int | float | None,
+        started_at: int | float | None,
+        subagent_ids_by_path: dict[str, str],
+    ) -> list[dict[str, Any]]:
+        """Normalize Codex's intrinsic child-activity item.
+
+        The surrounding item lifecycle only describes delivery of this
+        notification. Child state comes from ``kind`` itself.
+        """
+        agent_id = item.get("agentThreadId")
+        if not isinstance(agent_id, str) or not agent_id:
+            return []
+        raw_path = item.get("agentPath")
+        agent_path = raw_path.rstrip("/") if isinstance(raw_path, str) else ""
+        raw_kind = item.get("kind")
+        kind = raw_kind if isinstance(raw_kind, str) else None
+        state = {
+            "started": "running",
+            # Interaction is an observation, not a lifecycle transition. An
+            # unknown snapshot lets the client retain a prior reported state.
+            "interacted": "unknown",
+            "interrupted": "cancelled",
+            "completed": "completed",
+        }.get(kind, "unknown")
+        agent: dict[str, Any] = {"id": agent_id, "state": state}
+        if agent_path:
+            parent_path = agent_path.rsplit("/", 1)[0]
+            parent_id = subagent_ids_by_path.get(parent_path)
+            if parent_id and parent_id != agent_id:
+                agent["parent_id"] = parent_id
+            agent["label"] = _clip(agent_path, 2048)
+            if agent_path in subagent_ids_by_path or len(subagent_ids_by_path) < _SUBAGENT_PATH_LIMIT:
+                subagent_ids_by_path[agent_path] = agent_id
+        if kind == "started" and started_at is not None:
+            agent["started_at"] = started_at
+        if timestamp is not None:
+            agent["updated_at"] = timestamp
+            if kind in {"interrupted", "completed"}:
+                agent["finished_at"] = timestamp
+        return [agent]
 
     @staticmethod
     def _collab_agents(
@@ -795,6 +855,8 @@ class CodexProvider:
             return str(item.get("tool") or "Tool"), _json_text(body) if body else ""
         if item_type == "collabAgentToolCall":
             return str(item.get("tool") or "Agent"), str(item.get("prompt") or "")
+        if item_type == "subAgentActivity":
+            return "Agent activity", ""
         if item_type == "webSearch":
             return "Web search", str(item.get("query") or "")
         if item_type == "imageView":

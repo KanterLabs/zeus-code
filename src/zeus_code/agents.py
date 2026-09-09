@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import json
 from typing import Any
 
 
@@ -86,6 +87,41 @@ def _agent_entries(value: Any) -> list[dict[str, Any]]:
     return [entry for entry in bounded if isinstance(entry, dict)]
 
 
+
+def _event_agents(data: dict[str, Any]) -> list[dict[str, Any]]:
+    entries = _agent_entries(data.get("agents"))
+    if entries or data.get("tool_type") != "subAgentActivity":
+        return entries
+    # Older daemons persisted this public Codex item as generic tool text.
+    # Recover its stable identity on the client without replaying or restarting
+    # the provider. The enclosing tool completion is NOT agent completion.
+    text = data.get("text")
+    if not isinstance(text, str) or len(text) > 128 * 1024:
+        return []
+    try:
+        item = json.loads(text)
+    except (ValueError, TypeError):
+        return []
+    if not isinstance(item, dict):
+        return []
+    agent_id = item.get("agentThreadId")
+    kind = item.get("kind")
+    if not isinstance(agent_id, str) or not agent_id.strip() or not isinstance(kind, str) or kind not in {"started", "interacted", "interrupted", "completed"}:
+        return []
+    agent: dict[str, Any] = {"id": agent_id}
+    path = item.get("agentPath")
+    if isinstance(path, str) and path.strip():
+        agent["label"] = path
+    if kind == "started":
+        agent["state"] = "running"
+    elif kind == "completed":
+        agent["state"] = "completed"
+    elif kind == "interrupted":
+        agent["state"] = "cancelled"
+    # Interaction alone does not tell us whether the child is still running.
+    return [agent]
+
+
 def summarize_agents(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Merge provider agent snapshots into a stable, bounded public summary.
 
@@ -118,7 +154,7 @@ def summarize_agents(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
         if not isinstance(data, dict):
             continue
         event_time = _text(event.get("created_at"), 80)
-        for raw in _agent_entries(data.get("agents")):
+        for raw in _event_agents(data):
             agent_id = _text(raw.get("id"), 512)
             if agent_id is None:
                 continue
