@@ -74,6 +74,12 @@ class RunActivity:
             text += " · offline"
         return text
 
+    @property
+    def last_activity(self) -> str:
+        if self.quiet_for is None or self.state not in ACTIVE_STATES:
+            return ""
+        return f"Last activity {duration(self.quiet_for)} ago"
+
 
 def summarize_activity(
     thread: dict[str, Any], events: list[dict[str, Any]], run: dict[str, Any], *,
@@ -152,4 +158,9 @@ def summarize_activity(
     if stale:
         detail = (f"Last known: {label.lower()}. Reconnecting; work may continue on the machine."
                   if state in ACTIVE_STATES else f"Last known: {label.lower()}. {detail}")
+    elif state == "running" and quiet_for is not None and quiet_for >= 120:
+        # Silence alone cannot prove a provider is stuck. Preserve the actual
+        # run state and describe the observation, without fabricating failure.
+        detail = f"{label}: {detail}. No update for {duration(quiet_for)}; check connection or wait."
+        label = "No recent activity"
     return RunActivity(state, label, detail, elapsed, quiet_for, stale)

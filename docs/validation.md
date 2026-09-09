@@ -1,5 +1,34 @@
 # v1 validation
 
+## v1.2.0 daily workflow candidate
+
+September 9, 2026: the integrated suite passes **298 Python tests** and
+**16 npm tests** under **ZC-28**. Source and packaged lifecycle checks, npm
+packed installation and the packaged terminal walkthrough pass.
+The running-thread regression uses an isolated real daemon and gated provider:
+switching A → B → A and reconnecting preserve the original run, one provider
+invocation, one user message and one terminal result. A continuously moving
+event tail reproduced a client refresh timeout; catch-up now stops at the
+snapshot sequence boundary and retains events beyond that boundary.
+
+Recovery fixtures verify that unconfirmed sends remain tied to the original
+server, late acknowledgements preserve newer drafts (including edits back to
+the same text), and automatic diff previews use a separate transport from live
+polling. The populated client cache keeps its existing schema and unknown fields.
+Agent fixtures distinguish current-run activity from historical or offline
+observations and never infer that a historical agent is still running.
+
+The terminal walkthrough adds a 160×40 automatic agent panel, a 48×16 daily
+workflow, and switching between two actually running fixture tasks. These tests
+use local deterministic providers; they do not invoke paid model turns. The
+packaged walkthrough produced 36 captures under `.work/ux-v1.2.0` and verified
+that the health-check seam loaded the actual archive. Release checking stayed
+idle until requested, and no real update ran inside the fixture.
+
+Daemon regressions also cover rejecting a known unavailable provider without
+creating a run or event, retaining an already accepted request after provider
+availability changes, and adding projects during a frozen paginated snapshot.
+
 ## v1.1.1 remote discovery follow-up
 
 The local suite passes **253 Python tests**. The packaged lifecycle and terminal

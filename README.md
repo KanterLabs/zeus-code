@@ -9,7 +9,31 @@ view position, and progress. Agents run in a persistent daemon on their machine;
 closing the terminal client does not cancel them.
 
 The [roadmap](docs/roadmap.md) prioritizes easier setup, reliable navigation and a
-polished terminal UI for v1.1, followed by workspace and remote improvements.
+polished terminal UI, with daily workspace improvements in v1.2.
+
+## Daily workflow
+
+Run `zeus-code` to return to your saved server and conversation. Drafts and
+history position survive closing and reopening the client; reconnecting never
+resends a prompt automatically. The sidebar favors pinned and recent projects,
+with inactive projects collapsed. Use project search to reach the rest.
+
+The command palette (`Ctrl+K`) contains pinning, conversation search and archive
+recovery, connection health, and explicit recovery actions. A new conversation
+gets a short title from its first accepted prompt unless you give it a name.
+Failed prompts can be edited or explicitly retried. An unconfirmed send is
+checked using its original request identity, so a dropped connection does not
+silently create a second run.
+
+Remote setup shows progress and actionable SSH errors. Provider checks report
+installation and configured login readiness using credentials already on the dev
+server; Zeus does not sign in on your behalf. The health view shows client/server
+versions and connection state. Release checks and local client updates run only when requested; updating
+the client leaves daemon work running. Reopen the client to use its new version.
+
+The activity strip shows the current action and last provider update. After a
+long quiet period it says **No recent activity**; silence does not prove failure.
+Changed-file review remains available without switching away from the thread.
 
 ## Start
 
@@ -80,9 +104,11 @@ approval and cancellation stop the animation. **Ctrl+X** stops the selected run;
 **F7** expands tool output. The sidebar also shows activity in other threads.
 Offline machines show their last known state with a frozen timer.
 
-When Codex launches child agents, a compact summary shows their activity.
-**F9** expands their identities, states and public results inside the conversation.
-Short terminals open a scrollable detail view instead.
+When Codex launches child agents, wide terminals show a live agent panel
+automatically. Running work comes first; completed agents stay compact.
+**F9** opens selectable agent details with task, state, elapsed time, model when
+reported, and public results. Smaller terminals keep a compact overview and
+open details on demand. The parent conversation keeps its draft and history position.
 Zeus displays automatic agents; it does not launch workers itself.
 
 **F5** opens the attention inbox across machines. Unread results remain unread

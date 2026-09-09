@@ -36,6 +36,10 @@ class Form:
     error: str = ""
     busy: bool = False
     progress: str = ""
+    progress_steps: list[str] = field(default_factory=list)
+    progress_index: int = -1
+    failure_stage: str = ""
+    failure_action: str = ""
     _cursors: list[int] = field(init=False, repr=False)
     _replace_defaults: list[bool] = field(init=False, repr=False)
 
@@ -45,6 +49,7 @@ class Form:
         self.labels = dict(self.labels)
         self.hints = dict(self.hints)
         self.selectors = dict(self.selectors)
+        self.progress_steps = list(self.progress_steps)
 
         if not self.values:
             self.values = [default for _, default in self.fields]
@@ -112,6 +117,16 @@ class Form:
         self.values[index] = str(value)
         self._cursors[index] = len(self.values[index])
         self._replace_defaults[index] = bool(selected_default)
+
+    def set_progress(self, message: str) -> None:
+        """Record one setup stage without coupling a form to task execution."""
+        self.progress = str(message)
+        try:
+            self.progress_index = self.progress_steps.index(self.progress)
+        except ValueError:
+            self.progress_index = -1
+        self.failure_stage = ""
+        self.failure_action = ""
 
     def key(self, key: str | int) -> bool:
         """Handle one ``get_wch`` value and report whether it was consumed."""

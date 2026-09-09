@@ -193,14 +193,18 @@ def validate_bundle(
 
 
 def release_body() -> str:
-    return """## Terminal UX improvements
+    return """## Daily workflow improvements
 
-- F4: searchable model and supported reasoning/variant settings, with a visible model indicator.
-- F9: automatic Codex child-agent activity and readable details, including short terminals.
-- F5: unread results and approvals across machines, with preserved drafts and history position.
-- Ctrl+K: searchable commands with clear targets, plus dark/light/terminal/monochrome themes.
-- Compatible client updates retain immutable runtimes while daemon work continues.
-- OpenCode and Codex are discovered in common user install locations even in minimal SSH environments.
+- Restore your last server, project, conversation, draft and history position.
+- Keep projects and conversations focused with pins, recent ordering, collapse and search.
+- Follow remote setup stages with actionable SSH diagnostics and provider readiness.
+- See the current action and last activity; recover failed or unconfirmed sends explicitly.
+- Review changed files and individual diffs without leaving the conversation.
+- Give new conversations useful first-prompt titles; rename, archive and restore from search.
+- Inspect connection and client/server versions, check releases and update the local client in the UI.
+- Follow running subagents in an automatic wide-terminal panel, with selectable task, timing and result details.
+- Keep busy background threads current when switching or reconnecting, without replaying prompts.
+- Retain model controls, attention inbox and safe immutable runtime updates.
 
 ## Update
 

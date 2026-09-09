@@ -175,7 +175,9 @@ class WorkspaceTests(unittest.IsolatedAsyncioTestCase):
         workspace = self.make_workspace(rpc)
         await workspace.sync_machine("local")
         self.assertEqual(workspace.selected_machine["cursor"], count)
-        self.assertGreaterEqual(sum(1 for method, _ in rpc.calls if method == "events"), 4)
+        # The snapshot high-water is sufficient; don't wait for an empty
+        # sentinel page while a busy provider keeps appending events.
+        self.assertEqual(sum(1 for method, _ in rpc.calls if method == "events"), 3)
         cached = workspace.thread_events("t1")
         self.assertEqual(len(cached), min(count, MAX_EVENTS_PER_THREAD))
         self.assertEqual(cached[-1]["seq"], count)

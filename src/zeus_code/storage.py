@@ -446,6 +446,22 @@ class Store:
                 raise ValueError("thread already has an active run")
             run_id = _id()
             now = _now()
+            # Give an untouched conversation a useful name on its first
+            # accepted prompt. This stays inside the run transaction so a
+            # rejected or duplicate send never changes a user's title.
+            first_run = self._db.execute(
+                "SELECT 1 FROM runs WHERE thread_id = ? LIMIT 1", (thread_id,)
+            ).fetchone() is None
+            if first_run:
+                title = " ".join("".join(
+                    char for char in prompt if char.isprintable() or char.isspace()
+                ).split())
+                title = title[:77].rstrip() + "…" if len(title) > 80 else title
+                if title:
+                    self._db.execute(
+                        "UPDATE threads SET title = ? WHERE id = ? AND title IN ('', 'New conversation', 'New thread')",
+                        (title, thread_id),
+                    )
             self._db.execute(
                 """INSERT INTO runs
                    (id, thread_id, prompt, request_id, state, error, created_at, updated_at)
