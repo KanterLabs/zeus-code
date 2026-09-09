@@ -1,9 +1,16 @@
 # Zeus Code roadmap
 
-Updated September 9, 2026. Released baseline: **v1.2.0**. Tracking: Helm
+Updated September 9, 2026. Released baseline: **v1.2.1**. Tracking: Helm
 project **ZC**; planning is recorded in **ZC-22**, and the complete implementation
 is tracked by **ZC-27** for the **v1.1.0** UX release and **v1.1.1** remote-provider follow-up. Unrelated future
 work remains in Backlog. Order below takes priority over older milestone labels.
+
+## v1.2.1 follow-up — ZC-31
+
+Light is the default unless a theme was explicitly saved. Current Codex
+subagent activity is normalized, and the client recovers the same activity
+already recorded by older daemons. The reported 1.2.0 F9/no-agents failure is
+covered by a real-shape terminal regression and read-only dev verification.
 
 ## v1.2 daily workflow — ZC-28
 

@@ -16,6 +16,13 @@ supplying a normalized agent list. The integrated suite passes 303 Python tests
 and 16 npm tests, including 17 Codex subprocess fixtures. No paid model turns
 were used for validation.
 
+GitHub v1.2.1 passed Python 3.11/3.14 and npm packaging CI. All three
+published assets match the tested build. A managed v1.2.0 launcher successfully
+updated to v1.2.1 and retained its rollback copy. The downloaded client read
+existing dev events over SSH from the unchanged v1.2.0 daemon, recovered two
+agents, and opened the F9 details view. No server restart or prompt replay was
+needed. Tracking: ZC-31.
+
 ## v1.2.0 daily workflow
 
 September 9, 2026: the integrated suite passes **298 Python tests** and
